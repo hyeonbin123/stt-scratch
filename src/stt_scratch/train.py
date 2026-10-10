@@ -178,6 +178,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     p.add_argument("--no-perturb", action="store_true")
     p.add_argument("--no-augment", action="store_true")
+    p.add_argument(
+        "--augment-start-epoch",
+        type=int,
+        default=0,
+        help="SpecAugment is off before this epoch (0-based); the CTC alignment forms first (rule change 13)",
+    )
+    p.add_argument(
+        "--perturb-start-epoch", type=int, default=0, help="speed perturbation is off before this epoch"
+    )
     p.add_argument("--fp32", action="store_true")
     p.add_argument(
         "--eval-chunk", type=int, default=16, help="simulated chunk (frames) evaluated every epoch"
@@ -271,15 +280,15 @@ def main(argv: list[str] | None = None) -> None:
     for epoch in range(start_epoch, args.epochs):
         model.train()
         sampler.set_epoch(epoch)
+        augment = not args.no_augment and epoch >= args.augment_start_epoch
+        perturb = not args.no_perturb and epoch >= args.perturb_start_epoch
         t_epoch = time.perf_counter()
         wait, compute = 0.0, 0.0
         t_wait = time.perf_counter()
         for batch in loader:
             wait += time.perf_counter() - t_wait
             t_step = time.perf_counter()
-            mel, frames, targets, target_lengths = prepare_batch(
-                batch, logmel, device, rng, not args.no_perturb
-            )
+            mel, frames, targets, target_lengths = prepare_batch(batch, logmel, device, rng, perturb)
             spec = (
                 ChunkSpec(0, -1)
                 if args.offline_only
@@ -288,7 +297,7 @@ def main(argv: list[str] | None = None) -> None:
             for g in opt.param_groups:
                 g["lr"] = lr_at(step, schedule_steps, args.warmup, args.lr)
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-                logits, inter, out_lengths = model(mel, frames, spec, augment=not args.no_augment)
+                logits, inter, out_lengths = model(mel, frames, spec, augment=augment)
                 loss, parts = total_loss(logits, inter, out_lengths, targets, target_lengths, cfg.sc_weight)
             opt.zero_grad(set_to_none=True)
             if not torch.isfinite(loss):
@@ -339,6 +348,8 @@ def main(argv: list[str] | None = None) -> None:
         base = {
             "epoch": epoch,
             "step": step,
+            "augment": augment,
+            "perturb": perturb,
             "epoch_time_s": epoch_time,
             "wait_s": wait,
             "compute_s": compute,
