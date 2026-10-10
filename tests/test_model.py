@@ -92,6 +92,23 @@ def test_streaming_equals_offline(chunk: int, left: int) -> None:
     assert torch.allclose(streamed, offline, atol=1e-5), float((streamed - offline).abs().max())
 
 
+def test_streaming_partial_last_chunk() -> None:
+    """A final chunk shorter than 4 * chunk_size frames must still match the offline result."""
+    model = make_model()
+    spec = ChunkSpec(8, 64)
+    t_mel = 4 * 8 * 4 + 13
+    mel = random_mel(t_mel, seed=9)
+    with torch.no_grad():
+        offline = log_probs_fp32(model(mel, torch.tensor([t_mel]), spec)[0])[0]
+        enc = StreamingEncoder(model, spec)
+        state = enc.new_state()
+        parts = [enc.step(mel[0, i * 32 : (i + 1) * 32], state) for i in range(4)]
+        parts.append(enc.step(mel[0, 4 * 32 :], state))
+        streamed = torch.cat(parts, dim=0)
+    assert streamed.shape == offline.shape
+    assert torch.allclose(streamed, offline, atol=1e-5)
+
+
 def test_streaming_equals_offline_all_causal_conv() -> None:
     model = make_model(bacon=False)
     spec = ChunkSpec(8, 64)
