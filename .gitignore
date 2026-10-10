@@ -2,8 +2,8 @@ AGENTS.md
 CLAUDE.md
 HANDOFF.md
 TASKS.md
-data/
-outputs/
-work/
+/data/
+/outputs/
+/work/
 .venv/
 __pycache__/
