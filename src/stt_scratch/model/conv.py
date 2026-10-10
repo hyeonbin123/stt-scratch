@@ -36,30 +36,28 @@ class SplitDepthwiseConv1d(nn.Module):
         self, x: torch.Tensor, chunk_size: int, left_cache: torch.Tensor | None = None, frame_offset: int = 0
     ) -> torch.Tensor:
         """x: (B, C, T). left_cache: (B, C, k-1) past frames for streaming (zeros when None).
-        frame_offset: absolute index of x[..., 0] (so chunk boundaries stay aligned in streaming)."""
+        frame_offset: absolute index of x[..., 0] (so chunk boundaries stay aligned in streaming).
+
+        Both halves run as ordinary grouped conv1d; the chunk-bounded half is a symmetric conv from which
+        the contribution of right taps that cross the frame's chunk end is subtracted (exact, no unfold)."""
         b, c, t = x.shape
-        k = self.kernel
+        k, half, cc = self.kernel, self.half, self.causal_channels
         cache = x.new_zeros(b, c, k - 1) if left_cache is None else left_cache
-        # causal half: windows ending at i
-        xc = torch.cat([cache, x], dim=2)  # (B, C, T + k - 1)
-        win_c = xc.unfold(2, k, 1)  # (B, C, T, k) window j covers frames i-k+1 .. i
-        out_c = (win_c[:, : self.causal_channels] * self.weight[: self.causal_channels, None, :]).sum(-1)
-        if self.causal_channels == c:
-            return out_c + self.bias[None, :, None]
-        # chunk-bounded bidirectional half: windows centred at i, right taps masked beyond the chunk end
-        xb = torch.cat([cache[:, :, -self.half :], x, x.new_zeros(b, c, self.half)], dim=2)
-        win_b = xb.unfold(2, k, 1)[:, self.causal_channels :]  # (B, C/2, T, k): tap j -> frame i - half + j
+        w = self.weight.to(x.dtype)
+        xc = torch.cat([cache, x], dim=2)  # (B, C, T + k - 1); window ending at i covers i-k+1 .. i
+        out_c = nn.functional.conv1d(xc[:, :cc], w[:cc, None, :], groups=cc)
+        if cc == c:
+            return out_c + self.bias[None, :, None].to(x.dtype)
+        xb = torch.cat([cache[:, cc:, -half:], x[:, cc:], x.new_zeros(b, c - cc, half)], dim=2)
+        out_b = nn.functional.conv1d(xb, w[cc:, None, :], groups=c - cc)  # symmetric taps i-half .. i+half
         idx = torch.arange(t, device=x.device) + frame_offset
         if chunk_size > 0:
-            end = (idx // chunk_size + 1) * chunk_size - 1  # absolute chunk end per frame
-        else:
-            end = torch.full_like(idx, idx[-1] + 10**9)
-        taps = torch.arange(k, device=x.device) - self.half  # relative tap offsets
-        allowed = (idx[:, None] + taps[None, :]) <= end[:, None]  # (T, k)
-        allowed &= (idx[:, None] + taps[None, :]) <= (frame_offset + t - 1)  # nothing beyond the given input
-        win_b = win_b * allowed.to(win_b.dtype)[None, None]
-        out_b = (win_b * self.weight[self.causal_channels :, None, :]).sum(-1)
-        return torch.cat([out_c, out_b], dim=1) + self.bias[None, :, None]
+            end = (idx // chunk_size + 1) * chunk_size - 1
+            for j in range(1, half + 1):
+                over = ((idx + j) > end).to(x.dtype)  # right tap j crosses the chunk end (no host sync)
+                shifted = xb[:, :, half + j : half + j + t]
+                out_b = out_b - w[cc:, half + j][None, :, None] * shifted * over[None, None, :]
+        return torch.cat([out_c, out_b], dim=1) + self.bias[None, :, None].to(x.dtype)
 
 
 class ConvModule(nn.Module):

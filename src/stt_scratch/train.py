@@ -116,7 +116,9 @@ def main(argv: list[str] | None = None) -> None:
     run.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(args.seed)
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = (
+        False  # shapes change every batch; autotuning per shape dominated step time
+    )
 
     vocab = Vocab.load(ROOT / "manifests" / "vocab.json")
     train_utts = read_manifest(ROOT / "manifests" / f"{args.train}.jsonl")
@@ -246,6 +248,17 @@ def main(argv: list[str] | None = None) -> None:
             }
             (run / "epochs.jsonl").open("a", encoding="utf-8").write(json.dumps(summary) + "\n")
             print(json.dumps(summary), flush=True)
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "opt": opt.state_dict(),
+                    "scaler": scaler.state_dict(),
+                    "epoch": epoch,
+                    "step": step,
+                    "config": asdict(cfg),
+                },
+                run / "last.pt",
+            )
             break
         model.eval()
         dev_results = {}

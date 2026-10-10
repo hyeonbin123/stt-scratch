@@ -66,6 +66,15 @@
 - H0.1 위반 발화는 제외하고 비율을 기록. H0.2 위반이면 예산 규칙 적용
 - 데이터 대기 비율 > 20 %면 fbank fp16 사전 계산으로 전환하고 기록
 
+### 0단계 결과 (2026-10-11)
+- 데이터(`reports/stage0/data_summary.md`, `scripts/prepare_data.py`): 학습 21,853발화 51.77 h(Zeroth 46.11 + FLEURS 4.75 + CV22 0.91), dev_mix 700발화 1.46 h, dev_h 1,113발화 2.65 h, test_zeroth 457, test_h 1,280발화 2.92 h, test_fleurs 382, test_cv 472. 학습 제외 844발화 3.19 h(숫자 619, 라틴 200, 20 s 초과 24, 모두 FLEURS; CV22 오디오 결손 1). 홀드아웃 H 318문장 2,393발화(10.6 %), dev_h 151문장, test_h 167문장, 서로 겹침 없음. 어휘 1,288(음절 1,285). 평가 세트 OOV 음절 비율 0.005~0.37 %. 학습 토큰률 p50 6.55 / p95 8.01 / 최대 10.64 토큰/s
+- **H0.1 충족**: 25 fps CTC 길이 제약 위반 0 / 21,853 (0.000 %)
+- 참고: Zeroth 공식 test 423문장 중 367개는 학습 세트에, 55개는 홀드아웃 H에 있다(본 문장 조건은 그대로)
+- 단위 테스트: `tests/test_model.py` 21개 + `tests/test_prepare_data.py` 13개 통과(미래 누출 없음, 캐시 스트리밍 == 오프라인 청크 마스크 fp32 최대 차이 < 1e-5, 부분 마지막 청크 포함, 패딩 불변, 스트리밍 fbank == 오프라인, autocast 아래 CTC 입력 fp32, 분할 conv가 독립 unfold 구현과 일치, 합성 20발화 과적합 CER 0)
+- 마이크로벤치(`reports/stage0/bench.json`, RTX 2080 Ti, fp16, 동적 청크·속도 교란·SpecAugment 포함, 30 step 평균): max-duration 300 s → 피크 4.31 GB, 0.663 s/step, 697 step/epoch, **epoch 약 7.8분**, 평균 배치 32발화, 데이터 대기 1.1 %; 400 s → 5.62 GB, 0.685 s/step, 6.0분. 200·600 s도 OOM 없음(600 s 8.9 GB). SDPA는 flash 커널 불가(sm_75), memory-efficient 커널 사용. `is_bf16_supported(including_emulation=False)` = False 확인
+- **H0.2 충족**(300 s 피크 ≤ 9.5 GB, epoch ≤ 8분). 100 epoch ≈ 13 h로 예산 규칙(14 h) 안이므로 2단계는 100 epoch, max-duration 300 s 그대로
+- 측정 중 고친 것: 처음 벤치는 `cudnn.benchmark=True`로 돌려 1.36 s/step(배치 모양이 매번 달라 cuDNN 자동 튜닝이 step마다 돌았음)이었고, 끄자 0.66 s/step. 분할 depthwise conv를 unfold 구현에서 grouped conv1d + 청크 끝 보정으로 바꿨다(출력은 독립 구현과 1e-5 안에서 같음, 테스트 추가). step 시간은 배치 크기(13~55발화)와 무관하게 약 0.65 s로 GPU 연산(약 0.14 s)보다 커널 실행·Python 오버헤드가 지배한다. Windows라 torch.compile(Triton)은 쓸 수 없어 그대로 둔다
+
 ## 1단계: fp16 안정성·peak LR (2026-10-11 규칙, 측정 전)
 
 - 후보: peak LR {1e-3, 2e-3} × 시드 {1, 2, 3}, warmup 4,000 step, 최종 구성 그대로 5 epoch

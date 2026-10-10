@@ -26,4 +26,10 @@
 ## 2026-10-11 데이터 준비 (`scripts/prepare_data.py`)
 - **만든 것**: Claude Code(배경 에이전트). 정규화·제외·홀드아웃 해시·어휘·PCM 저장소·요약 보고서
 - **검증**: `tests/test_prepare_data.py`(해시 규칙 결정성, dev_h/test_h 분리, CTC 프레임 공식, CV 경로 분리) + 실제 실행 결과 `reports/stage0/data_summary.md`
-- **잡은 것**: (실행 결과를 받은 뒤 적는다)
+- **잡은 것**: FLEURS `id`는 문장 id라 발화마다 유일하지 않아(최대 3명이 같은 문장) id에 parquet 행 번호를 붙였다. CV22 validated 1행은 어느 tar에도 mp3가 없어 `missing_audio`로 제외했다(규칙에 없던 사유를 추가해 기록). mp3 헤더의 프레임 수가 실제 디코딩 길이와 달라(표본 40/40) 헤더 대신 디코딩 길이를 쓰게 했다. 두 번 실행해 매니페스트·어휘의 SHA-256이 같음을 확인했다
+
+## 2026-10-11 0단계 마이크로벤치 (`scripts/bench_stage0.py`)
+- **만든 것**: Claude Code. max-duration별 피크 메모리·step 시간·데이터 대기 비율, SDPA 커널 탐지
+- **검증**: 실제 학습 step으로 측정(`reports/stage0/bench.json`), 프로파일러로 GPU 시간과 벽시계를 분리
+- **잡은 것**: 첫 측정이 1.36 s/step으로 예상(5~8분/epoch)을 크게 넘겼다. 프로파일러에서 GPU 시간은 0.14 s뿐이고 `convolution_backward`의 CPU 시간이 컸다 → 배치 모양이 매번 달라지는데 `cudnn.benchmark=True`가 step마다 알고리즘 탐색을 돌린 것. 끄자 0.66 s/step. 또 분할 conv의 unfold 구현이 (B, C, T, 15) 텐서를 매 층 만들던 것을 grouped conv1d + 청크 끝 보정으로 바꾸고, 보정 루프의 `.any()` 호스트 동기화 84회/forward를 없앴다. 독립 unfold 구현과 대조하는 테스트를 추가했다
+- **사람이 정한 것**: 없음(예산 규칙은 사전 등록대로 적용)

@@ -202,3 +202,33 @@ def test_overfit_tiny_dataset() -> None:
         logits, _, lengths = model(mels, frames, ChunkSpec(0, -1))
     hyps = greedy_batch(logits, lengths)
     assert hyps == labels
+
+
+def _reference_split_conv(conv, x: torch.Tensor, chunk_size: int) -> torch.Tensor:
+    """Independent unfold implementation of the split depthwise conv (offline, zero left history)."""
+    b, c, t = x.shape
+    k, half, cc = conv.kernel, conv.half, conv.causal_channels
+    w, bias = conv.weight, conv.bias
+    xc = torch.nn.functional.pad(x, (k - 1, 0)).unfold(2, k, 1)  # (B, C, T, k)
+    out_c = (xc[:, :cc] * w[:cc, None, :]).sum(-1)
+    xb = torch.nn.functional.pad(x, (half, half)).unfold(2, k, 1)[:, cc:]
+    idx = torch.arange(t)
+    end = (idx // chunk_size + 1) * chunk_size - 1 if chunk_size > 0 else torch.full_like(idx, t - 1)
+    taps = torch.arange(k) - half
+    allowed = ((idx[:, None] + taps[None, :]) <= end[:, None]) & ((idx[:, None] + taps[None, :]) <= t - 1)
+    out_b = (xb * allowed.to(xb.dtype)[None, None] * w[cc:, None, :]).sum(-1)
+    return torch.cat([out_c, out_b], dim=1) + bias[None, :, None]
+
+
+@pytest.mark.parametrize("chunk", [0, 4, 8, 16])
+@pytest.mark.parametrize("bacon", [True, False])
+def test_split_conv_matches_reference(chunk: int, bacon: bool) -> None:
+    from stt_scratch.model.conv import SplitDepthwiseConv1d
+
+    torch.manual_seed(3)
+    conv = SplitDepthwiseConv1d(16, 15, bacon)
+    x = torch.randn(2, 16, 45)
+    with torch.no_grad():
+        got = conv(x, chunk)
+        ref = _reference_split_conv(conv, x, chunk)
+    assert torch.allclose(got, ref, atol=1e-5)

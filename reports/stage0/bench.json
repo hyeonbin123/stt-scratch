@@ -1,0 +1,36 @@
+{
+ "gpu": "NVIDIA GeForce RTX 2080 Ti",
+ "torch": "2.11.0+cu128",
+ "n_train_utts": 21853,
+ "train_hours": 51.76970694444501,
+ "sdpa": {
+  "flash": "unavailable: RuntimeError",
+  "mem_efficient": true,
+  "math": true
+ },
+ "bf16_native": false,
+ "runs": [
+  {
+   "max_duration_s": 300.0,
+   "oom": false,
+   "peak_mem_gb": 4.306687488,
+   "steps_per_epoch": 697,
+   "step_time_s": 0.6629638633341528,
+   "wait_time_s": 0.007484340004157275,
+   "wait_share": 0.011163188993409318,
+   "batch_size_mean": 32.0,
+   "epoch_time_min_est": 7.788373295446703
+  },
+  {
+   "max_duration_s": 400.0,
+   "oom": false,
+   "peak_mem_gb": 5.623525376,
+   "steps_per_epoch": 521,
+   "step_time_s": 0.684521349996794,
+   "wait_time_s": 0.009934919998825838,
+   "wait_share": 0.014306041183685333,
+   "batch_size_mean": 43.733333333333334,
+   "epoch_time_min_est": 6.030195277795299
+  }
+ ]
+}
