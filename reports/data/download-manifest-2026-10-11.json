@@ -136,5 +136,79 @@
     "bytes": 1077573
    }
   ]
+ },
+ {
+  "name": "common_voice_22_ko",
+  "repo": "fsicoli/common_voice_22_0",
+  "revision": "main",
+  "commit_sha": "ae911de250fe9375d08e2daa2105b671d659d446",
+  "license": "CC0 1.0",
+  "gated": false,
+  "files": [
+   {
+    "path": "audio/ko/dev/ko_dev_0.tar",
+    "bytes": 15235072
+   },
+   {
+    "path": "audio/ko/invalidated/ko_invalidated_0.tar",
+    "bytes": 17645056
+   },
+   {
+    "path": "audio/ko/other/ko_other_0.tar",
+    "bytes": 118878720
+   },
+   {
+    "path": "audio/ko/test/ko_test_0.tar",
+    "bytes": 14848512
+   },
+   {
+    "path": "audio/ko/train/ko_train_0.tar",
+    "bytes": 20093440
+   },
+   {
+    "path": "README.md",
+    "bytes": 4567
+   },
+   {
+    "path": "transcript/ko/clip_durations.tsv",
+    "bytes": 193264
+   },
+   {
+    "path": "transcript/ko/dev.tsv",
+    "bytes": 160977
+   },
+   {
+    "path": "transcript/ko/invalidated.tsv",
+    "bytes": 134654
+   },
+   {
+    "path": "transcript/ko/other.tsv",
+    "bytes": 1209542
+   },
+   {
+    "path": "transcript/ko/reported.tsv",
+    "bytes": 5076
+   },
+   {
+    "path": "transcript/ko/test.tsv",
+    "bytes": 153696
+   },
+   {
+    "path": "transcript/ko/train.tsv",
+    "bytes": 173815
+   },
+   {
+    "path": "transcript/ko/unvalidated_sentences.tsv",
+    "bytes": 276367
+   },
+   {
+    "path": "transcript/ko/validated.tsv",
+    "bytes": 488573
+   },
+   {
+    "path": "transcript/ko/validated_sentences.tsv",
+    "bytes": 1154491
+   }
+  ]
  }
 ]

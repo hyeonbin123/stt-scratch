@@ -121,7 +121,9 @@ def inventory_common_voice(root: Path) -> dict:
     with open(root / "transcript" / "ko" / "clip_durations.tsv", encoding="utf-8") as f:
         for row in csv.DictReader(f, delimiter="\t"):
             durations_ms[row["clip"]] = float(row["duration[ms]"])
-    for split in ("train", "dev", "test", "other", "invalidated"):
+    for split in ("train", "dev", "test", "validated", "other", "invalidated"):
+        if not (root / "transcript" / "ko" / f"{split}.tsv").exists():
+            continue
         with open(root / "transcript" / "ko" / f"{split}.tsv", encoding="utf-8") as f:
             rows = list(csv.DictReader(f, delimiter="\t", quoting=csv.QUOTE_NONE))
         texts = [r["sentence"].strip() for r in rows]
@@ -162,13 +164,16 @@ def main() -> None:
     inv = {
         "zeroth_korean": inventory_zeroth(raw / "zeroth_korean"),
         "fleurs_ko": inventory_fleurs(raw / "fleurs_ko"),
-        "common_voice_17_ko": inventory_common_voice(raw / "common_voice_17_ko"),
     }
-    z, fl, cv = inv["zeroth_korean"], inv["fleurs_ko"], inv["common_voice_17_ko"]
+    cv_names = [n for n in ("common_voice_22_ko", "common_voice_17_ko") if (raw / n).exists()]
+    for name in cv_names:
+        inv[name] = inventory_common_voice(raw / name)
+    z, fl, cv = inv["zeroth_korean"], inv["fleurs_ko"], inv[cv_names[0]]
     inv["overlap"] = {
         "zeroth_test_in_zeroth_train": overlap(z["train"]["texts"], z["test"]["texts"]),
         "fleurs_test_in_fleurs_train": overlap(fl["train"]["texts"], fl["test"]["texts"]),
         "fleurs_validation_in_fleurs_train": overlap(fl["train"]["texts"], fl["validation"]["texts"]),
+        "cv_corpus": cv_names[0],
         "cv_test_in_cv_train": overlap(cv["train"]["texts"], cv["test"]["texts"]),
         "cv_dev_in_cv_train": overlap(cv["train"]["texts"], cv["dev"]["texts"]),
     }
@@ -186,13 +191,13 @@ def main() -> None:
             "oov_types": len(set(ch for ch in toks if ch not in train_syl)),
         }
     # drop raw text lists from the JSON (keep the file small); they are recomputable
-    for corpus in ("zeroth_korean", "fleurs_ko", "common_voice_17_ko"):
+    for corpus in ["zeroth_korean", "fleurs_ko", *cv_names]:
         for split in inv[corpus].values():
             split.pop("texts", None)
     Path(args.out).write_text(json.dumps(inv, ensure_ascii=False, indent=1), encoding="utf-8")
     print("| corpus | split | utts | hours | unique texts | syl inventory | chars/s p50/p95 | sample rates |")
     print("|---|---|---|---|---|---|---|---|")
-    for corpus in ("zeroth_korean", "fleurs_ko", "common_voice_17_ko"):
+    for corpus in ["zeroth_korean", "fleurs_ko", *cv_names]:
         for split, s in inv[corpus].items():
             row = [
                 corpus,

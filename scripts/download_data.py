@@ -4,6 +4,7 @@ Sources (all ungated on the Hugging Face Hub, checked at runtime before download
 - kresnik/zeroth_korean          Zeroth-Korean, CC BY 4.0, parquet (train 6 shards + test)
 - google/fleurs  (ko_kr)         FLEURS Korean, CC BY 4.0, parquet from the refs/convert/parquet branch
 - fsicoli/common_voice_17_0 (ko) Common Voice 17 Korean mirror, CC0 1.0, audio tar + transcript tsv
+- fsicoli/common_voice_22_0 (ko) Common Voice 22 Korean mirror, CC0 1.0 (used; 17 kept as fallback)
 
 Usage: uv run python scripts/download_data.py [--dest data/raw]
 Writes <dest>/manifest.json with the exact revision (commit sha) and file list of every download.
@@ -39,18 +40,30 @@ SOURCES = [
         "allow": ["README.md", "audio/ko/*/*.tar", "transcript/ko/*.tsv"],
         "license": "CC0 1.0",
     },
+    {
+        "name": "common_voice_22_ko",
+        "repo": "fsicoli/common_voice_22_0",
+        "revision": None,
+        "allow": ["README.md", "audio/ko/*/*.tar", "transcript/ko/*.tsv"],
+        "license": "CC0 1.0",
+    },
 ]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dest", default="data/raw")
+    parser.add_argument("--only", nargs="*", help="subset of source names to download")
     args = parser.parse_args()
     dest = Path(args.dest)
     dest.mkdir(parents=True, exist_ok=True)
     api = HfApi()
-    manifest = []
+    manifest_path = dest / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else []
     for src in SOURCES:
+        if args.only and src["name"] not in args.only:
+            continue
+        manifest = [m for m in manifest if m["name"] != src["name"]]
         info = api.dataset_info(src["repo"], revision=src["revision"])
         if info.gated:
             raise SystemExit(

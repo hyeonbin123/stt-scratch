@@ -111,6 +111,138 @@
    "raw_transcription_pct_with_digits": 22.5130890052356
   }
  },
+ "common_voice_22_ko": {
+  "train": {
+   "files": 1,
+   "sample_rates": {
+    "32000": 19
+   },
+   "n_utts": 519,
+   "n_unique_texts": 519,
+   "syllables_per_utt_mean": 21.786127167630056,
+   "syllables_per_utt_max": 44,
+   "pct_with_digits": 0.0,
+   "pct_with_latin": 0.0,
+   "pct_with_punct": 84.77842003853564,
+   "syllable_inventory": 791,
+   "hours": 0.9105900000000001,
+   "duration_mean_s": 6.3162312138728325,
+   "duration_p95_s": 10.008,
+   "duration_max_s": 10.548,
+   "chars_per_sec_p50": 3.8647342995169085,
+   "chars_per_sec_p95": 4.960974456007569,
+   "chars_per_sec_max": 5.73394495412844,
+   "n_speakers": 3
+  },
+  "dev": {
+   "files": 1,
+   "sample_rates": {
+    "32000": 19
+   },
+   "n_utts": 474,
+   "n_unique_texts": 474,
+   "syllables_per_utt_mean": 22.352320675105485,
+   "syllables_per_utt_max": 44,
+   "pct_with_digits": 0.0,
+   "pct_with_latin": 0.21097046413502107,
+   "pct_with_punct": 86.07594936708861,
+   "syllable_inventory": 772,
+   "hours": 0.68731,
+   "duration_mean_s": 5.2200759493670885,
+   "duration_p95_s": 7.981199999999998,
+   "duration_max_s": 10.116,
+   "chars_per_sec_p50": 4.421985340126933,
+   "chars_per_sec_p95": 5.665356757589767,
+   "chars_per_sec_max": 6.4655172413793105,
+   "n_speakers": 7
+  },
+  "test": {
+   "files": 1,
+   "sample_rates": {
+    "32000": 19
+   },
+   "n_utts": 472,
+   "n_unique_texts": 472,
+   "syllables_per_utt_mean": 20.60169491525424,
+   "syllables_per_utt_max": 42,
+   "pct_with_digits": 0.0,
+   "pct_with_latin": 0.0,
+   "pct_with_punct": 86.65254237288136,
+   "syllable_inventory": 764,
+   "hours": 0.6692800000000001,
+   "duration_mean_s": 5.104677966101696,
+   "duration_p95_s": 7.812,
+   "duration_max_s": 10.656,
+   "chars_per_sec_p50": 4.20109139126887,
+   "chars_per_sec_p95": 5.818809005083515,
+   "chars_per_sec_max": 8.14176245210728,
+   "n_speakers": 74
+  },
+  "validated": {
+   "files": 0,
+   "sample_rates": {},
+   "n_utts": 1466,
+   "n_unique_texts": 1465,
+   "syllables_per_utt_mean": 21.583901773533423,
+   "syllables_per_utt_max": 44,
+   "pct_with_digits": 0.0,
+   "pct_with_latin": 0.06821282401091405,
+   "pct_with_punct": 85.81173260572987,
+   "syllable_inventory": 1001,
+   "hours": 2.2686900000000003,
+   "duration_mean_s": 5.571135061391542,
+   "duration_p95_s": 9.099,
+   "duration_max_s": 10.656,
+   "chars_per_sec_p50": 4.21455938697318,
+   "chars_per_sec_p95": 5.615908348263079,
+   "chars_per_sec_max": 8.14176245210728,
+   "n_speakers": 84
+  },
+  "other": {
+   "files": 1,
+   "sample_rates": {
+    "32000": 19
+   },
+   "n_utts": 3813,
+   "n_unique_texts": 3811,
+   "syllables_per_utt_mean": 19.155782848151063,
+   "syllables_per_utt_max": 48,
+   "pct_with_digits": 0.0,
+   "pct_with_latin": 0.13113034356150013,
+   "pct_with_punct": 88.17204301075269,
+   "syllable_inventory": 1149,
+   "hours": 5.3557500000000005,
+   "duration_mean_s": 5.056569630212431,
+   "duration_p95_s": 9.396,
+   "duration_max_s": 105.516,
+   "chars_per_sec_p50": 3.9386401326699834,
+   "chars_per_sec_p95": 7.777777777777778,
+   "chars_per_sec_max": 29.23976608187134,
+   "n_speakers": 150
+  },
+  "invalidated": {
+   "files": 1,
+   "sample_rates": {
+    "32000": 19
+   },
+   "n_utts": 399,
+   "n_unique_texts": 399,
+   "syllables_per_utt_mean": 23.205513784461154,
+   "syllables_per_utt_max": 45,
+   "pct_with_digits": 0.0,
+   "pct_with_latin": 0.0,
+   "pct_with_punct": 87.21804511278195,
+   "syllable_inventory": 753,
+   "hours": 0.8017899999999999,
+   "duration_mean_s": 7.234195488721803,
+   "duration_p95_s": 10.368,
+   "duration_max_s": 52.056,
+   "chars_per_sec_p50": 3.227699530516432,
+   "chars_per_sec_p95": 6.5177923021060264,
+   "chars_per_sec_max": 21.135265700483092,
+   "n_speakers": 50
+  }
+ },
  "common_voice_17_ko": {
   "train": {
    "files": 1,
@@ -178,6 +310,26 @@
    "chars_per_sec_max": 7.495590828924163,
    "n_speakers": 44
   },
+  "validated": {
+   "files": 0,
+   "sample_rates": {},
+   "n_utts": 1046,
+   "n_unique_texts": 1045,
+   "syllables_per_utt_mean": 21.877629063097515,
+   "syllables_per_utt_max": 44,
+   "pct_with_digits": 0.0,
+   "pct_with_latin": 0.09560229445506692,
+   "pct_with_punct": 85.75525812619503,
+   "syllable_inventory": 926,
+   "hours": 1.62625,
+   "duration_mean_s": 5.5970363288718925,
+   "duration_p95_s": 9.099,
+   "duration_max_s": 10.548,
+   "chars_per_sec_p50": 4.246284501061571,
+   "chars_per_sec_p95": 5.644191780263668,
+   "chars_per_sec_max": 7.495590828924163,
+   "n_speakers": 52
+  },
   "other": {
    "files": 1,
    "sample_rates": {
@@ -236,6 +388,7 @@
    "exact_match_unique": 0,
    "pct_of_b_utts_in_a": 0.0
   },
+  "cv_corpus": "common_voice_22_ko",
   "cv_test_in_cv_train": {
    "exact_match_unique": 0,
    "pct_of_b_utts_in_a": 0.0
@@ -246,7 +399,7 @@
   }
  },
  "syllable_coverage": {
-  "train_inventory": 1312,
+  "train_inventory": 1321,
   "zeroth_test": {
    "n_syllable_tokens": 19288,
    "oov_tokens": 0,
@@ -258,9 +411,9 @@
    "oov_types": 12
   },
   "cv_test": {
-   "n_syllable_tokens": 7389,
-   "oov_tokens": 19,
-   "oov_types": 18
+   "n_syllable_tokens": 9724,
+   "oov_tokens": 30,
+   "oov_types": 24
   }
  }
 }
