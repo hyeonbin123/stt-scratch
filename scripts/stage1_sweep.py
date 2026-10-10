@@ -25,6 +25,7 @@ def run_one(
     out_dir: str,
     schedule_steps: int,
     dev_loss_rule: str,
+    train_args: str = "",
 ) -> dict:
     run = f"{out_dir}/lr{lr:g}_seed{seed}"
     cmd = [
@@ -47,6 +48,7 @@ def run_one(
         str(schedule_steps),
         "--dev-loss-rule",
         dev_loss_rule,
+        *train_args.split(),
     ]
     subprocess.run(cmd, cwd=ROOT, check=True)
     epochs_log = [
@@ -93,6 +95,7 @@ def main() -> None:
     )
     p.add_argument("--dev-loss-rule", default="1,3", help="A,B epochs for the dev-loss divergence rule")
     p.add_argument("--report-prefix", default="", help="prefix for summary/verdict files in reports/stage1")
+    p.add_argument("--train-args", default="", help="extra arguments passed through to stt_scratch.train")
     args = p.parse_args()
     out_dir = ROOT / "reports" / "stage1"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +113,7 @@ def main() -> None:
                     args.out_dir,
                     args.schedule_steps,
                     args.dev_loss_rule,
+                    args.train_args,
                 )
             )
             (out_dir / f"{pre}summary.json").write_text(json.dumps(results, indent=1), encoding="utf-8")

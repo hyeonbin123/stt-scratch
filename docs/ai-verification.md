@@ -48,6 +48,12 @@
 - **잡은 것(반영 중)**: `weights_only=True` + `map_location=cuda`가 난수 상태 바이트 텐서도 GPU로 옮겨 `set_rng_state`가 실패 → `.cpu()`로 되돌린다. `SplitDepthwiseConv1d.half` 속성이 `nn.Module.half()`를 가려 테스트에서 `.to(torch.float16)`을 쓴다
 - **사람이 정한 것**: 없음(모두 검토 지적의 반영이며 판정 규칙의 뜻은 바꾸지 않음)
 
+## 2026-10-11 1단계 2차 시도 전부 발산 → 진단 (`reports/stage1/diag-2026-10-11.md`)
+- **만든 것**: Claude Code. 2차 시도 6런이 모두 발산 판정(5런은 dev 손실 규칙, 1런은 scale 붕괴)을 받아 원인을 찾는 탐색 런 7개: 이어 학습, 실제 발화 20개 과적합, 어텐션 로짓·가중치 노름 추적, QK-norm 파일럿, 정규화 끄기(P1)·SpecAugment만 끄기(P5)·커리큘럼(P6). 모두 "판정에 쓰지 않는 진단"으로 표시
+- **검증**: PCM 저장소를 원본 parquet 음성과 비트 단위로 대조(37발화 불일치 0), 인덱스·길이 불일치 0 / 21,853. 실제 발화 20개 과적합이 150 step에 CER 0 → 데이터·특징·모델·CTC 경로 정상
+- **잡은 것**: ① 규칙 변경 3의 "epoch 3 vs epoch 1" 비교가 warmup 구간과 겹쳐 정체와 미학습을 구분하지 못함 ② 1단계 cosine 스케줄 길이를 5 epoch로 잡아 peak LR 유지 구간이 없었음(`--schedule-steps`로 2단계 스케줄을 잘라 쓰게 고침) ③ LR 7e-4 이상에서 어텐션 로짓 표준편차 2 → 13~27 → 60~111 폭주, 기울기 노름 37k(QK-norm으로 1~3에 묶임) ④ **진짜 원인은 처음부터 건 SpecAugment**: 끄면 epoch 2에 dev 손실 96·CER 0.57로 정렬이 시작되고, 속도 교란·동적 청크는 무관(P5). 처방은 규칙 변경 13(QK-norm 기본, SpecAugment epoch 3부터, 2단계 스케줄 절단) ⑤ 운영: GPU 작업 두 개를 동시에 띄우면 WDDM 페이징으로 둘 다 멈춤 → 한 번에 하나만. 감시 파이프라인 끝의 `cut`이 블록 버퍼링으로 이벤트를 삼킴
+- **사람이 정한 것**: 없음(2차 시도 6런은 "처방 전"으로 기록만 하고 H1에 넣지 않음)
+
 ## 2026-10-11 스트리밍 서비스 코드 (`src/stt_scratch/service/`, `web/index.html`, `scripts/stream_client.py`)
 - **만든 것**: Claude Code. 규칙 기반 끝점(blank ≥ 0.8 묵음, rule1 2.4 s / rule2 1.2 s / rule3 20 s), 세션(PCM → fbank → 캐시 스트리밍 → append-only greedy → 끝점), FastAPI WebSocket 서버(바이너리 int16 PCM 입력, partial/final JSON 출력, flush 뒤 청크당 계산 시간 통계), 브라우저 마이크 페이지, 실시간 클라이언트(6단계 지연 측정용)
 - **검증**: `tests/test_service.py` 8개(끝점 규칙 시점, 끝점 끈 세션의 최종 텍스트 == 배치 청크 마스크 greedy와 정확한 청크 수, 강제 끝점 뒤에도 모든 mel 프레임이 인코더에 들어가고 패킷마다 청크 1개가 나옴, CUDA에서 fp16 autocast로 도는지, WebSocket 왕복이 stats 메시지로 끝남, 끝점 뒤 세그먼트 전진). 6단계 측정표는 학습 뒤

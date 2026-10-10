@@ -56,7 +56,7 @@ def build_model(vocab: Vocab, args: argparse.Namespace) -> tuple[ChunkConformerC
         sc_weight=args.sc_weight,
         sc_feedback=not args.no_sc_feedback,
         bacon=not args.no_bacon,
-        qk_norm=args.qk_norm,
+        qk_norm=not args.no_qk_norm,
         full_context_prob=0.0 if args.offline_only else 0.5,
         mel_mean=stats["mean"],
         mel_std=stats["std"],
@@ -170,9 +170,7 @@ def main(argv: list[str] | None = None) -> None:
         "--no-sc-feedback", action="store_true", help="InterCTC only: intermediate losses, no feedback"
     )
     p.add_argument("--no-bacon", action="store_true")
-    p.add_argument(
-        "--qk-norm", action="store_true", help="LayerNorm on q and k per head (attention stability)"
-    )
+    p.add_argument("--no-qk-norm", action="store_true", help="drop the per-head LayerNorm on q and k")
     p.add_argument(
         "--offline-only", action="store_true", help="control run: full context only, no chunk masks"
     )
@@ -181,7 +179,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument(
         "--augment-start-epoch",
         type=int,
-        default=0,
+        default=3,
         help="SpecAugment is off before this epoch (0-based); the CTC alignment forms first (rule change 13)",
     )
     p.add_argument(
