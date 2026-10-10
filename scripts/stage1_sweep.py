@@ -44,22 +44,20 @@ def run_one(lr: float, seed: int, epochs: int, max_duration: float, warmup: int)
     ]
     last = epochs_log[-1]
     first_dev = next((e for e in epochs_log if "dev" in e), None)
-    dev_losses = [e for e in epochs_log if "dev" in e]
-    diverged = bool(last.get("divergence"))
-    # "dev CTC loss not decreasing by epoch 3" is approximated by dev CER not improving between epochs 0 and 2
-    not_improving = (
-        len(dev_losses) >= 3
-        and dev_losses[2]["dev"]["dev_mix"]["full"] >= dev_losses[0]["dev"]["dev_mix"]["full"]
-    )
+    # train.py applies the whole divergence definition (NaN count, scale, dev CTC loss not decreasing by
+    # epoch 3) and records the reason in the epoch summary that stopped the run
+    divergence = last.get("divergence")
     return {
         "run": run,
         "lr": lr,
         "seed": seed,
-        "diverged": diverged or not_improving,
-        "divergence": last.get("divergence"),
-        "not_improving_by_epoch3": not_improving,
-        "nan": last.get("nan"),
+        "diverged": bool(divergence),
+        "divergence": divergence,
+        "dev_loss": [e["dev_loss"] for e in epochs_log if "dev_loss" in e],
+        "nan": last.get("nan_count"),
         "skipped": last.get("skipped"),
+        "updates": last.get("updates"),
+        "step": last.get("step"),
         "min_scale": min((r["scale"] for r in train_log), default=None),
         "dev_mix_full": last["dev"]["dev_mix"]["full"] if "dev" in last else None,
         "dev_h_full": last["dev"]["dev_h"]["full"] if "dev" in last else None,
@@ -75,7 +73,7 @@ def main() -> None:
     p.add_argument("--lrs", default="1e-3,2e-3")
     p.add_argument("--seeds", default="1,2,3")
     p.add_argument("--max-duration", type=float, default=300.0)
-    p.add_argument("--warmup", type=int, default=4000)
+    p.add_argument("--warmup", type=int, default=2000)
     args = p.parse_args()
     out_dir = ROOT / "reports" / "stage1"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -85,14 +83,16 @@ def main() -> None:
             results.append(run_one(lr, seed, args.epochs, args.max_duration, args.warmup))
             (out_dir / "summary.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
     lines = [
-        "| LR | seed | 발산 | NaN | skipped | min scale | dev_mix | dev_h | dev_mix c16 | epoch s |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| LR | seed | 발산 | NaN | skipped | updates | min scale | dev loss | dev_mix | dev_h | "
+        "dev_mix c16 | epoch s |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
+        dev_loss = ", ".join(f"{x:.1f}" for x in r["dev_loss"])
         lines.append(
-            f"| {r['lr']:g} | {r['seed']} | {r['diverged']} | {r['nan']} | {r['skipped']} | "
-            f"{r['min_scale']} | {r['dev_mix_full']} | {r['dev_h_full']} | {r['dev_mix_chunk16']} | "
-            f"{r['epoch_time_s']:.0f} |"
+            f"| {r['lr']:g} | {r['seed']} | {r['diverged']} | {r['nan']} | {r['skipped']} | {r['updates']} | "
+            f"{r['min_scale']} | {dev_loss} | {r['dev_mix_full']} | {r['dev_h_full']} | "
+            f"{r['dev_mix_chunk16']} | {r['epoch_time_s']:.0f} |"
         )
     verdict = {}
     for lr in sorted({r["lr"] for r in results}):

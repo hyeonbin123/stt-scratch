@@ -107,7 +107,7 @@ class ChunkConformerCTC(nn.Module):
         self.blocks = nn.ModuleList(ConformerBlock(cfg) for _ in range(cfg.n_layers))
         self.out_proj = nn.Linear(cfg.d_model, cfg.vocab_size)  # shared by the final and intermediate heads
         self.sc_layers = set(cfg.sc_layers)
-        self.sc_proj = nn.Linear(cfg.vocab_size, cfg.d_model) if self.sc_layers else None
+        self.sc_proj = nn.Linear(cfg.vocab_size, cfg.d_model) if self.sc_layers and cfg.sc_feedback else None
 
     def normalize_mel(self, mel: torch.Tensor) -> torch.Tensor:
         return (mel - self.mel_mean) / self.mel_std
@@ -139,6 +139,7 @@ class ChunkConformerCTC(nn.Module):
             if i in self.sc_layers and i < len(self.blocks):
                 logits = self.out_proj(x)
                 inter.append(logits)
-                probs = torch.softmax(logits.float(), dim=-1).to(x.dtype)
-                x = x + self.sc_proj(probs)
+                if self.sc_proj is not None:
+                    probs = torch.softmax(logits.float(), dim=-1).to(x.dtype)
+                    x = x + self.sc_proj(probs)
         return self.out_proj(x), inter, out_lengths

@@ -3,7 +3,7 @@
 The stream state holds, per block, the last L attention inputs (post-LayerNorm) and the last k-1 conv
 inputs, plus the subsampling caches. Each chunk is forwarded once; keys/values of cached frames are
 re-projected ("input cache + re-projection"), which makes the result identical to an offline forward
-with the same chunk mask (checked by tests/test_streaming.py).
+with the same chunk mask (checked by tests/test_model.py).
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ class StreamState:
 
 class StreamingEncoder:
     def __init__(self, model: ChunkConformerCTC, spec: ChunkSpec) -> None:
-        if spec.full or spec.left_context < 0:
-            raise ValueError("streaming needs a finite chunk size and left context")
+        if spec.full or spec.left_context <= 0:
+            raise ValueError("streaming needs a finite chunk size and a positive left context")
         if spec.left_context % spec.chunk_size:
             raise ValueError("left context must be a multiple of the chunk size")
         self.model = model.eval()
@@ -60,7 +60,7 @@ class StreamingEncoder:
             )
             state.attn_caches[i - 1] = kv[:, -self.spec.left_context :]
             state.conv_caches[i - 1] = new_conv
-            if i in m.sc_layers and i < len(m.blocks):
+            if i in m.sc_layers and i < len(m.blocks) and m.sc_proj is not None:
                 probs = torch.softmax(m.out_proj(x).float(), dim=-1).to(x.dtype)
                 x = x + m.sc_proj(probs)
         state.frames_seen += t_c

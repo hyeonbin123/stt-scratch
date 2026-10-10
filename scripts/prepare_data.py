@@ -32,7 +32,7 @@ import sys
 import tarfile
 import time
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -100,9 +100,9 @@ def output_frames(n_samples: int) -> int:
     return frames
 
 
-def ctc_fits(n_samples: int, ids: list[int]) -> bool:
-    """Training length constraint: output frames >= U + repeats + 1."""
-    return output_frames(n_samples) >= ctc_min_frames(ids) + 1
+def ctc_fits(n_samples: int, ids: Sequence) -> bool:
+    """Training length constraint: output frames >= U + repeats + 1 (ids or characters: same repeats)."""
+    return output_frames(n_samples) >= ctc_min_frames(list(ids)) + 1
 
 
 def exclusion_reason(text: str, duration_s: float) -> str | None:
@@ -263,10 +263,12 @@ def collect_parquet(raw: Path, stats: dict, progress: Progress) -> list[Utt]:
                 stats["resampled"][source] += 1
             utt = make_utt(src, n_samples)
             progress.tick()
+            target = manifest if manifest is not None else zeroth_target(utt.text)
             if not utt.text:
+                require_train(utt, target, "empty normalized transcript")
                 stats["empty_text"][source] += 1
                 continue
-            utt.manifest = manifest if manifest is not None else zeroth_target(utt.text)
+            utt.manifest = target
             utts.append(utt)
     return utts
 
@@ -317,16 +319,14 @@ def collect_common_voice(raw: Path, stats: dict, progress: Progress) -> list[Utt
                 normalize_train(text_raw),
             )
             if not utt.text:
+                require_train(utt, manifest, "empty normalized transcript")
                 stats["empty_text"][source] += 1
                 continue
             hit = audio.get(row["path"])
             if hit is None:
-                if manifest == "train":
-                    utt.reason = "missing_audio"
-                    utts.append(utt)
-                else:
-                    stats["missing_audio_eval"][source] += 1
-                    log(f"WARNING: no audio for evaluation utterance {utt.id}; dropped")
+                require_train(utt, manifest, "no audio in the tar files")
+                utt.reason = "missing_audio"
+                utts.append(utt)
                 continue
             utt.pcm, rate = hit
             if rate == SAMPLE_RATE:
@@ -337,22 +337,28 @@ def collect_common_voice(raw: Path, stats: dict, progress: Progress) -> list[Utt
     return utts
 
 
+def require_train(utt: Utt, target: str | None, problem: str) -> None:
+    """Evaluation sets are fixed: an utterance that cannot be kept must stop the run, not shrink the set."""
+    if target != "train":
+        raise RuntimeError(f"evaluation utterance {utt.id} ({target}) cannot be kept: {problem}")
+
+
 def apply_train_exclusions(utts: list[Utt], stats: dict) -> Vocab:
-    """Exclusions 1-3, then the vocabulary on the surviving train texts, then the CTC length exclusion."""
-    for utt in utts:
-        if utt.manifest == "train":
-            reason = exclusion_reason(utt.text, utt.duration_s)
-            if reason is not None:
-                utt.reason, utt.manifest = reason, None
-    vocab = Vocab.build([utt.text for utt in utts if utt.manifest == "train"])
+    """Exclusions 1-3 and the CTC length exclusion (on characters, which gives the same repeat count as
+    token ids because every surviving training character is in the vocabulary), then the vocabulary on
+    the final train texts."""
     checked = 0
     for utt in utts:
         if utt.manifest == "train":
-            checked += 1
-            if not ctc_fits(utt.n_samples, vocab.encode(utt.text)):
-                utt.reason, utt.manifest = "ctc_length", None
+            reason = exclusion_reason(utt.text, utt.duration_s)
+            if reason is None:
+                checked += 1
+                if not ctc_fits(utt.n_samples, utt.text):
+                    reason = "ctc_length"
+            if reason is not None:
+                utt.reason, utt.manifest = reason, None
     stats["ctc_checked"] = checked
-    return vocab
+    return Vocab.build([utt.text for utt in utts if utt.manifest == "train"])
 
 
 # ----------------------------------------------------------------------------------------------------

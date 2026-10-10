@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import jiwer
 import numpy as np
 
-from stt_scratch.text import normalize_score, normalize_train
+from stt_scratch.text import normalize_hyp_ws, normalize_score, normalize_train
 
 BOOTSTRAP_SAMPLES = 1_000
 BOOTSTRAP_SEED = 0
@@ -41,8 +41,8 @@ def score_ns(reference: str, hypothesis: str) -> Scored | None:
 
 
 def score_ws(reference: str, hypothesis: str) -> Scored | None:
-    """CER with spaces counted as characters (training normalization on both sides)."""
-    return _edits(normalize_train(reference), normalize_train(hypothesis))
+    """CER with spaces counted as characters (training normalization; the hypothesis keeps UNK_CHAR)."""
+    return _edits(normalize_train(reference), normalize_hyp_ws(hypothesis))
 
 
 def error_rate(edits: np.ndarray, lengths: np.ndarray) -> float:

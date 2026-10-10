@@ -71,7 +71,9 @@ def main() -> None:
         "bf16_native": torch.cuda.is_bf16_supported(including_emulation=False),
         "runs": [],
     }
-    torch.backends.cudnn.benchmark = False  # shapes change every batch; autotuning per shape dominated step time
+    torch.backends.cudnn.benchmark = (
+        False  # shapes change every batch; autotuning per shape dominated step time
+    )
     for md in (float(x) for x in args.durations.split(",")):
         torch.manual_seed(0)
         cfg = ModelConfig(vocab_size=len(vocab), mel_mean=stats["mean"], mel_std=stats["std"])

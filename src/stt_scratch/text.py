@@ -17,12 +17,26 @@ _NON_TEXT = re.compile(r"[^가-힣A-Za-z0-9\s]")
 _SCORE_PUNCT = re.compile(r"[^\w\s']|_")
 
 BLANK, UNK, SPACE = "<blank>", "<unk>", " "
+# Decoded form of <unk>: U+318D (Hangul letter araea). It is a word character, so the whisper-ko-ft scoring
+# normalization keeps it and every emitted <unk> counts as one wrong character; it can never occur in a
+# reference (normalize_train keeps only Hangul syllables, Latin letters, digits and spaces).
+UNK_CHAR = "\u318d"
+# normalize_train for hypotheses: identical, except that UNK_CHAR is kept (used by CER_ws scoring).
+_NON_TEXT_HYP = re.compile("[^\uac00-\ud7a3A-Za-z0-9\\s" + UNK_CHAR + "]")
 
 
 def normalize_train(text: str) -> str:
     """Training/evaluation reference normalization: NFC, punctuation -> space, collapse spaces."""
     text = unicodedata.normalize("NFC", text)
     text = _NON_TEXT.sub(" ", text)
+    return " ".join(text.split())
+
+
+def normalize_hyp_ws(text: str) -> str:
+    """Training normalization for a hypothesis: like normalize_train but keeps UNK_CHAR, so an emitted
+    <unk> stays one wrong character in CER_ws as well (references never contain it)."""
+    text = unicodedata.normalize("NFC", text)
+    text = _NON_TEXT_HYP.sub(" ", text)
     return " ".join(text.split())
 
 
@@ -87,7 +101,8 @@ class Vocab:
         return [index.get(ch, self.unk_id) for ch in text]
 
     def decode(self, ids: list[int]) -> str:
-        return "".join(self.tokens[i] for i in ids if i not in (self.blank_id,))
+        """Drops blanks; <unk> becomes UNK_CHAR so it is scored as one wrong character."""
+        return "".join(UNK_CHAR if i == self.unk_id else self.tokens[i] for i in ids if i != self.blank_id)
 
     def _index(self) -> dict[str, int]:
         cached = getattr(self, "_cached_index", None)

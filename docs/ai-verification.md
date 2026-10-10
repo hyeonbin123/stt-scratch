@@ -33,3 +33,36 @@
 - **검증**: 실제 학습 step으로 측정(`reports/stage0/bench.json`), 프로파일러로 GPU 시간과 벽시계를 분리
 - **잡은 것**: 첫 측정이 1.36 s/step으로 예상(5~8분/epoch)을 크게 넘겼다. 프로파일러에서 GPU 시간은 0.14 s뿐이고 `convolution_backward`의 CPU 시간이 컸다 → 배치 모양이 매번 달라지는데 `cudnn.benchmark=True`가 step마다 알고리즘 탐색을 돌린 것. 끄자 0.66 s/step. 또 분할 conv의 unfold 구현이 (B, C, T, 15) 텐서를 매 층 만들던 것을 grouped conv1d + 청크 끝 보정으로 바꾸고, 보정 루프의 `.any()` 호스트 동기화 84회/forward를 없앴다. 독립 unfold 구현과 대조하는 테스트를 추가했다
 - **사람이 정한 것**: 없음(예산 규칙은 사전 등록대로 적용)
+
+## 2026-10-11 1단계 첫 시도 발산 → CTC 커널 버그 (`src/stt_scratch/model/ctc.py`)
+- **만든 것**: Claude Code. 1단계 sweep 첫 시도(LR 1e-3, 시드 1·2·3)가 모두 100~120 step에서 GradScaler scale이 1e-12까지 떨어지며 발산 규칙에 걸렸다. 실패 배치를 저장해(`work/nan_batch.pt`) 원인을 찾았다
+- **검증**: 같은 배치를 fp32로 돌려도 16시드 중 14번 NaN이 나와 fp16 문제가 아니었다. CTC 손실만 떼어 발화 하나씩 계산한 기준 기울기와 비교했다
+- **잡은 것**: 두 가지. (1) 패딩 프레임(out_length 이후)의 CTC 기울기를 CUDA 커널이 초기화하지 않아 쓰레기 값이 역전파됐다 → `torch.where`로 패딩 프레임을 가려 역전파에서 버린다. (2) `log_probs.transpose(0, 1)`의 **비연속 뷰**를 그대로 넘기면 CUDA CTC backward가 유효 프레임에서도 기준과 최대 55 차이 나는(비결정적) 기울기와 NaN을 냈다 → `.contiguous()`로 (T, B, V) 연속 텐서를 넘기고, 정답은 (B, S) 패딩 int32 CPU 텐서, 길이도 int32 CPU로 넘긴다(1차원 정답 + CUDA int32 길이 조합은 기준과 1e-3 차이, 패딩 레이아웃은 1.2e-7). 수정 뒤 같은 배치 16시드에서 NaN 0회(fp16·fp32 모두). 무효 처리한 세 런의 요약은 `reports/stage1/attempt1-invalid-summary.json`에 남기고 출력은 지웠다. 발산 횟수 표에는 "코드 버그로 무효"로만 적고 H1 판정에 넣지 않는다
+- **사람이 정한 것**: 없음
+
+## 2026-10-11 Codex 0단계 독립 검토 반영
+- **방식**: Codex 읽기 전용 샌드박스가 로컬 파일을 못 읽어 `work/relay/run-codex-stdin.ps1`로 소스 전문(줄 번호 포함)과 규칙 문서를 stdin으로 넣어 정적 검토를 받았다(`work/relay/2026-10-11-0204-stage0-review-full-codex.md`, 16건: P1 2, P2 11, P3 3)
+- **반영(코드)**: ① CUDA fp16 실제 크기(12층 d=256, 1,288 클래스) 스트리밍 == 오프라인 테스트(≤ 1e-2, 25청크로 128프레임 캐시 절단 포함), fp16 미래 불변 테스트, 원시 음성→fbank→인코더 경로 테스트, `allclose`를 최대 절대차로 교체 ② dev_mix CTC 손실을 매 epoch 재서 "epoch 3 ≥ epoch 1"이면 발산(`train.py`) ③ BACON 우측 탭을 "더한 뒤 빼기"에서 "가린 뒤 더하기"로 바꿔 fp16에서도 미래 값이 반올림에 들어가지 않게 함(fp16 테스트는 비트 단위 동일) ④ 실제 스트리밍 평가도 autocast fp16으로 통일하고 결과에 `precision` 기록, `--fp32` 옵션 ⑤ 재개 시 난수 상태·발산 카운터·dev 손실 이력 복원, 중간 epoch 체크포인트는 재개 거부 ⑥ `step`(시도)·`updates`·`skipped` 분리 기록 ⑦ warmup 2,000(규칙 변경 1) ⑧ 첫 패킷 5,360 샘플(평가·클라이언트·브라우저) ⑨ 라틴 규칙 문구 ⑩ 어휘를 CTC 제외 뒤에 생성 ⑪ 평가 세트 누락 시 중단 ⑫ `<unk>` → U+318D ⑬ `--no-sc-feedback`(InterCTC 단독 ablation) ⑭ SpecAugment 시작점 상한 포함(마지막 bin·프레임도 가려짐) ⑮ 좌측 문맥 0 거부 ⑯ 주석·문서 정정(carry 길이, 테스트 수 29, greedy 반복 테스트가 청크 경계를 실제로 가로지르게, data.md 초안 폐기 표시)
+- **반영(규칙)**: `docs/experiments.md` "규칙 변경" 1~10
+- **검증**: 전체 테스트 56개 통과(`tests/test_model.py` 38, `tests/test_prepare_data.py` 13, `tests/test_service.py` 5). 수정 뒤 학습 루프 12 step 연기 실행과 중간 체크포인트 재개 거부, 체크포인트 난수 상태 왕복(`weights_only=True`) 확인
+- **잡은 것(반영 중)**: `weights_only=True` + `map_location=cuda`가 난수 상태 바이트 텐서도 GPU로 옮겨 `set_rng_state`가 실패 → `.cpu()`로 되돌린다. `SplitDepthwiseConv1d.half` 속성이 `nn.Module.half()`를 가려 테스트에서 `.to(torch.float16)`을 쓴다
+- **사람이 정한 것**: 없음(모두 검토 지적의 반영이며 판정 규칙의 뜻은 바꾸지 않음)
+
+## 2026-10-11 스트리밍 서비스 코드 (`src/stt_scratch/service/`, `web/index.html`, `scripts/stream_client.py`)
+- **만든 것**: Claude Code. 규칙 기반 끝점(blank ≥ 0.8 묵음, rule1 2.4 s / rule2 1.2 s / rule3 20 s), 세션(PCM → fbank → 캐시 스트리밍 → append-only greedy → 끝점), FastAPI WebSocket 서버(바이너리 int16 PCM 입력, partial/final JSON 출력, flush 뒤 청크당 계산 시간 통계), 브라우저 마이크 페이지, 실시간 클라이언트(6단계 지연 측정용)
+- **검증**: `tests/test_service.py` 8개(끝점 규칙 시점, 끝점 끈 세션의 최종 텍스트 == 배치 청크 마스크 greedy와 정확한 청크 수, 강제 끝점 뒤에도 모든 mel 프레임이 인코더에 들어가고 패킷마다 청크 1개가 나옴, CUDA에서 fp16 autocast로 도는지, WebSocket 왕복이 stats 메시지로 끝남, 끝점 뒤 세그먼트 전진). 6단계 측정표는 학습 뒤
+- **잡은 것**: 아래 적대적 검토 절 참조(끝점에서 버퍼를 버리던 P1 결함 등)
+- **사람이 정한 것**: 없음
+
+## 2026-10-11 Codex 반영 코드의 적대적 검토 (Claude 워크플로, 1단계 재시작 전)
+- **방식**: 7개 관점(분할 conv 수치, 학습 루프, 평가·서비스, CTC·데이터, 테스트 품질, Codex 16건 커버리지, 스트리밍 정확성)으로 읽기 전용 검토자를 병렬로 돌리고, 발견 23건마다 반박자 2명이 "반박 실패"해야 확정하는 방식. 확정 17건(중복 포함), 쟁점 3건, 반박 3건. 결과 JSON은 `work/`에 보관
+- **잡은 것(고침)**
+  - **P1 서비스 세션의 끝점 처리**: `_new_segment(reset_cache=True)`가 버퍼의 mel 프레임과 fbank 캐리까지 지워, 끝점마다 다음 세그먼트 음성 약 300 ms가 사라지고 그 뒤 모든 패킷이 32프레임 격자에서 벗어나 첫 청크가 다음 패킷까지 320 ms 늦어졌다(검토자가 소형 모델로 798 mel 프레임 중 33개 손실을 재현). 끝점에서는 greedy·끝점 카운터·인코더 캐시만 초기화하고 버퍼는 두도록 고치고, 강제 끝점 뒤 프레임 수 보존·패킷당 청크 1개를 확인하는 테스트를 추가했다
+  - **P2 서비스 경로 정밀도**: 세션이 autocast 없이 fp32로 돌아 평가 경로(fp16)와 달랐다 → 세션에 `amp` 옵션(기본 GPU에서 fp16), 서버 `--fp32`, `/info`에 precision, CUDA에서 dtype을 확인하는 테스트
+  - **P2 CER_ws의 `<unk>`**: 학습 정규화가 U+318D를 공백으로 바꿔 CER_ws에서는 `<unk>`가 사라졌다 → 가설 쪽 정규화만 U+318D를 남기는 `normalize_hyp_ws`를 두고 두 지표 모두에서 오류 1자로 세게 하고 테스트 추가(규칙 변경 7 문구 보강)
+  - 학습 루프: 같은 `--run`에 로그가 있으면 `--resume` 없이 시작 거부(이전 시도 로그 혼입 방지), 발산 판정을 받은 런은 재개 거부, dev 손실이 NaN이면 "내려가지 않음"으로 처리
+  - 테스트: 세션 테스트의 항진 단언(`a == b or a > 0`) 교체, WebSocket 테스트가 final이 없으면 무한 대기하던 것을 stats 메시지까지 유한 루프로, 원시 음성 경로 허용 오차를 등록 게이트 1e-5로(실측 2.9e-6 이하), CTC 손실·기울기를 발화별 기준과 대조하는 회귀 테스트 추가
+  - 클라이언트: 계산 시간 p50/p90을 이벤트(토큰이 난 청크 + compute 0인 eos)가 아니라 서버가 flush 뒤 보내는 전체 청크 통계로 계산. 브라우저 정지 시 worklet에 남은 320 ms 미만 음성을 drain 뒤 flush
+- **반박된 것(기록만)**: fp16 스트리밍 게이트 1e-2는 무작위 초기화에서만 확인했고 학습된 모델은 희박 클래스 log-prob에서 넘을 수 있다는 지적 → 2단계 끝에 확률 최대 절대차·argmax 일치율을 함께 보고하도록 규칙 변경 11에 적었다
+- **검증**: 전체 테스트 62개 통과(`test_model` 41, `test_prepare_data` 13, `test_service` 8)
+- **사람이 정한 것**: 없음

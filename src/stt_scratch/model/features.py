@@ -1,8 +1,10 @@
 """Log-mel features, global normalization, speed perturbation and SpecAugment, all on the training device.
 
 Frames: 25 ms window, 10 ms hop, center=False, 16 kHz -> n_mel = floor((samples - 400) / 160) + 1.
-Streaming uses the same frame grid: 320 ms of audio (5,120 samples) carries exactly 32 frames when the
-previous 240 samples are carried over (see StreamingFbank).
+Streaming uses the same frame grid (StreamingFbank keeps the samples after the last complete frame). A
+320 ms packet (5,120 samples) yields exactly 32 frames once 240 samples are carried over, so the first
+packet of a stream should carry FIRST_PACKET_EXTRA = 240 extra samples (5,360); otherwise the first
+encoder chunk waits for the second packet.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ N_FFT = 400
 HOP = 160
 N_MELS = 80
 LOG_EPS = 1e-6
+FIRST_PACKET_EXTRA = N_FFT - HOP  # 240 samples: makes every 320 ms packet (5,120 samples) carry 32 frames
 
 
 def n_mel_frames(n_samples: int) -> int:
@@ -45,7 +48,8 @@ class LogMel(torch.nn.Module):
 
 
 class StreamingFbank:
-    """Frame-exact streaming log-mel: carries the last 240 samples so chunk frames equal offline frames."""
+    """Frame-exact streaming log-mel: carries the samples after the last complete frame (240..399, exactly
+    240 once the stream is on the 160-sample grid) so the chunk frames equal the offline frames."""
 
     def __init__(self, logmel: LogMel) -> None:
         self.logmel = logmel
@@ -83,18 +87,20 @@ def spec_augment(
     time_ratio: float,
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
-    """Zero out random frequency bands and time spans per utterance (masks the normalized mel)."""
+    """Zero out random frequency bands and time spans per utterance (masks the normalized mel).
+
+    Width w ~ U{0..max}, start ~ U{0..size-w} inclusive, so the last bin/frame can be masked too."""
     b, t, f = mel.shape
     out = mel.clone()
     for i in range(b):
         valid = int(frames[i])
         for _ in range(freq_masks):
-            w = int(torch.randint(0, freq_width + 1, (1,), generator=generator))
-            f0 = int(torch.randint(0, max(1, f - w), (1,), generator=generator))
+            w = int(torch.randint(0, min(f, freq_width) + 1, (1,), generator=generator))
+            f0 = int(torch.randint(0, f - w + 1, (1,), generator=generator))
             out[i, :, f0 : f0 + w] = 0.0
         max_w = max(1, int(valid * time_ratio))
         for _ in range(time_masks):
-            w = int(torch.randint(0, max_w + 1, (1,), generator=generator))
-            t0 = int(torch.randint(0, max(1, valid - w), (1,), generator=generator))
+            w = int(torch.randint(0, min(valid, max_w) + 1, (1,), generator=generator))
+            t0 = int(torch.randint(0, max(0, valid - w) + 1, (1,), generator=generator))
             out[i, t0 : t0 + w, :] = 0.0
     return out

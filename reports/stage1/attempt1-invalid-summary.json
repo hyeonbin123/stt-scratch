@@ -1,0 +1,65 @@
+[
+ {
+  "run": "outputs/stage1/lr0.001_seed1",
+  "lr": 0.001,
+  "seed": 1,
+  "diverged": true,
+  "divergence": {
+   "epoch": 0,
+   "step": 118,
+   "nan_count": 0,
+   "low_scale_streak": 100
+  },
+  "not_improving_by_epoch3": false,
+  "nan": null,
+  "skipped": null,
+  "min_scale": 1.8189894035458565e-12,
+  "dev_mix_full": null,
+  "dev_h_full": null,
+  "dev_mix_chunk16": null,
+  "epoch_time_s": 71.62808909988962,
+  "first_epoch_dev": null
+ },
+ {
+  "run": "outputs/stage1/lr0.001_seed2",
+  "lr": 0.001,
+  "seed": 2,
+  "diverged": true,
+  "divergence": {
+   "epoch": 0,
+   "step": 120,
+   "nan_count": 0,
+   "low_scale_streak": 100
+  },
+  "not_improving_by_epoch3": false,
+  "nan": null,
+  "skipped": null,
+  "min_scale": 1.1368683772161603e-13,
+  "dev_mix_full": null,
+  "dev_h_full": null,
+  "dev_mix_chunk16": null,
+  "epoch_time_s": 74.23131689999718,
+  "first_epoch_dev": null
+ },
+ {
+  "run": "outputs/stage1/lr0.001_seed3",
+  "lr": 0.001,
+  "seed": 3,
+  "diverged": true,
+  "divergence": {
+   "epoch": 0,
+   "step": 121,
+   "nan_count": 0,
+   "low_scale_streak": 100
+  },
+  "not_improving_by_epoch3": false,
+  "nan": null,
+  "skipped": null,
+  "min_scale": 1.1102230246251565e-16,
+  "dev_mix_full": null,
+  "dev_h_full": null,
+  "dev_mix_chunk16": null,
+  "epoch_time_s": 76.07318960002158,
+  "first_epoch_dev": null
+ }
+]

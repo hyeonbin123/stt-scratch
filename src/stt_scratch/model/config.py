@@ -22,6 +22,8 @@ class ModelConfig:
     # and whose softmax is fed back into the next block. Empty tuple = plain CTC.
     sc_layers: tuple[int, ...] = (3, 6, 9)
     sc_weight: float = 0.5  # total = (1 - w) * final + w * mean(intermediate)
+    # False = plain InterCTC: the intermediate losses stay, the softmax feedback into the next block is off
+    sc_feedback: bool = True
     # Convolution module: True = BACON split (half causal, half chunk-bounded bidirectional);
     # False = all channels causal.
     bacon: bool = True

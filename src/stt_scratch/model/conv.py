@@ -38,8 +38,10 @@ class SplitDepthwiseConv1d(nn.Module):
         """x: (B, C, T). left_cache: (B, C, k-1) past frames for streaming (zeros when None).
         frame_offset: absolute index of x[..., 0] (so chunk boundaries stay aligned in streaming).
 
-        Both halves run as ordinary grouped conv1d; the chunk-bounded half is a symmetric conv from which
-        the contribution of right taps that cross the frame's chunk end is subtracted (exact, no unfold)."""
+        Both halves run as ordinary grouped conv1d. The chunk-bounded half is the causal part of the
+        symmetric kernel (taps i-half .. i) plus the right taps i+1 .. i+half, each masked to zero before it
+        is summed when it crosses the frame's chunk end: future values never enter a rounding operation,
+        so the result is future-invariant also in fp16 (a subtract-after-the-fact variant was not)."""
         b, c, t = x.shape
         k, half, cc = self.kernel, self.half, self.causal_channels
         cache = x.new_zeros(b, c, k - 1) if left_cache is None else left_cache
@@ -49,14 +51,15 @@ class SplitDepthwiseConv1d(nn.Module):
         if cc == c:
             return out_c + self.bias[None, :, None].to(x.dtype)
         xb = torch.cat([cache[:, cc:, -half:], x[:, cc:], x.new_zeros(b, c - cc, half)], dim=2)
-        out_b = nn.functional.conv1d(xb, w[cc:, None, :], groups=c - cc)  # symmetric taps i-half .. i+half
+        # taps i-half .. i: causal conv with the first half+1 kernel weights over xb[:, :, : t + half]
+        out_b = nn.functional.conv1d(xb[:, :, : t + half], w[cc:, None, : half + 1], groups=c - cc)
         idx = torch.arange(t, device=x.device) + frame_offset
-        if chunk_size > 0:
-            end = (idx // chunk_size + 1) * chunk_size - 1
-            for j in range(1, half + 1):
-                over = ((idx + j) > end).to(x.dtype)  # right tap j crosses the chunk end (no host sync)
-                shifted = xb[:, :, half + j : half + j + t]
-                out_b = out_b - w[cc:, half + j][None, :, None] * shifted * over[None, None, :]
+        end = (idx // chunk_size + 1) * chunk_size - 1 if chunk_size > 0 else None
+        for j in range(1, half + 1):
+            tap = xb[:, :, half + j : half + j + t]  # frame i + j (zero beyond the end of x)
+            if end is not None:
+                tap = tap.masked_fill(((idx + j) > end)[None, None, :], 0.0)  # crosses the chunk end
+            out_b = out_b + w[cc:, half + j][None, :, None] * tap
         return torch.cat([out_c, out_b], dim=1) + self.bias[None, :, None].to(x.dtype)
 
 

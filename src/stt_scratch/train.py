@@ -1,7 +1,12 @@
-"""Training loop: fp16 autocast, fp32 CTC, dynamic chunk training, warmup+cosine, per-epoch dev CER.
+"""Training loop: fp16 autocast, fp32 CTC, dynamic chunk training, warmup+cosine, per-epoch dev CER and loss.
 
 Usage (see docs/experiments.md for the pre-registered settings):
   uv run python -m stt_scratch.train --run outputs/stage2/runA --epochs 100 --lr 1e-3 --seed 1
+
+Counters in the logs: `step` = optimizer step attempts (the LR schedule, budgets and "same step count" rule
+run on it); `updates` = attempts the GradScaler did not skip; `skipped` = skipped attempts plus non-finite
+losses. Divergence (docs/experiments.md "fp16 규칙"): >= 3 non-finite losses, scale < 1 for 100 steps, or the
+dev CTC loss after epoch 3 not below the value after epoch 1. A diverged run stops and keeps last.pt.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ import torch
 from torch import nn
 
 from stt_scratch.data import DurationBucketSampler, PcmStore, SpeechDataset, collate, read_manifest
-from stt_scratch.evaluate import evaluate_manifest
+from stt_scratch.evaluate import ctc_loss_manifest, evaluate_manifest
 from stt_scratch.model.config import ModelConfig
 from stt_scratch.model.conformer import ChunkConformerCTC
 from stt_scratch.model.ctc import total_loss
@@ -30,6 +35,7 @@ from stt_scratch.text import Vocab
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEEDS = (0.9, 1.0, 1.1)
+COUNTERS = ("nan_count", "low_scale_streak", "skipped", "updates")
 
 
 def git_commit() -> str:
@@ -48,6 +54,7 @@ def build_model(vocab: Vocab, args: argparse.Namespace) -> tuple[ChunkConformerC
         ffn_dim=args.ffn_dim,
         sc_layers=tuple(int(x) for x in args.sc_layers.split(",")) if args.sc_layers else (),
         sc_weight=args.sc_weight,
+        sc_feedback=not args.no_sc_feedback,
         bacon=not args.no_bacon,
         full_context_prob=0.0 if args.offline_only else 0.5,
         mel_mean=stats["mean"],
@@ -81,21 +88,73 @@ def prepare_batch(batch: dict, logmel: LogMel, device: torch.device, rng: random
     return mel, frames, targets, target_lengths
 
 
+def rng_states(rng: random.Random, device: torch.device) -> dict:
+    states = {"python": rng.getstate(), "torch_cpu": torch.get_rng_state()}
+    if device.type == "cuda":
+        states["torch_cuda"] = torch.cuda.get_rng_state(device)
+    return states
+
+
+def restore_rng(states: dict, rng: random.Random, device: torch.device) -> None:
+    version, internal, gauss = states["python"]
+    rng.setstate((version, tuple(internal), gauss))
+    torch.set_rng_state(states["torch_cpu"].cpu())  # map_location may have moved the state tensors
+    if device.type == "cuda" and "torch_cuda" in states:
+        torch.cuda.set_rng_state(states["torch_cuda"].cpu(), device)
+
+
+def save_checkpoint(
+    path: Path,
+    model,
+    opt,
+    scaler,
+    cfg,
+    epoch: int,
+    step: int,
+    counters: dict,
+    dev_loss,
+    rng,
+    device,
+    complete,
+    divergence=None,
+):
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "opt": opt.state_dict(),
+            "scaler": scaler.state_dict(),
+            "epoch": epoch,
+            "step": step,
+            "config": asdict(cfg),
+            "epoch_complete": complete,
+            "divergence": divergence,
+            "counters": dict(counters),
+            "dev_loss": list(dev_loss),
+            "rng": rng_states(rng, device),
+        },
+        path,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--run", required=True)
     p.add_argument("--train", default="train")
     p.add_argument("--devs", default="dev_mix,dev_h")
+    p.add_argument("--dev-loss-set", default="dev_mix", help="manifest for the dev CTC loss divergence check")
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--max-duration", type=float, default=300.0)
     p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--warmup", type=int, default=4000)
+    p.add_argument("--warmup", type=int, default=2000)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--d-model", type=int, default=256)
     p.add_argument("--n-layers", type=int, default=12)
     p.add_argument("--ffn-dim", type=int, default=1024)
     p.add_argument("--sc-layers", default="3,6,9")
     p.add_argument("--sc-weight", type=float, default=0.5)
+    p.add_argument(
+        "--no-sc-feedback", action="store_true", help="InterCTC only: intermediate losses, no feedback"
+    )
     p.add_argument("--no-bacon", action="store_true")
     p.add_argument(
         "--offline-only", action="store_true", help="control run: full context only, no chunk masks"
@@ -114,6 +173,10 @@ def main(argv: list[str] | None = None) -> None:
 
     run = ROOT / args.run
     run.mkdir(parents=True, exist_ok=True)
+    if not args.resume and any((run / f).exists() for f in ("train.jsonl", "epochs.jsonl", "last.pt")):
+        raise SystemExit(
+            f"{run} already holds a run; pass --resume or use a new --run (logs are never mixed)"
+        )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(args.seed)
     torch.backends.cudnn.benchmark = (
@@ -137,6 +200,10 @@ def main(argv: list[str] | None = None) -> None:
     use_amp = device.type == "cuda" and not args.fp32
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     bf16_native = torch.cuda.is_bf16_supported(including_emulation=False) if device.type == "cuda" else None
+    rng = random.Random(args.seed)
+    counters = dict.fromkeys(COUNTERS, 0)
+    dev_loss_hist: list[float] = []
+    divergence = None
 
     start_epoch, step = 0, 0
     if args.init:
@@ -144,10 +211,22 @@ def main(argv: list[str] | None = None) -> None:
         model.load_state_dict(state["model"])
     if args.resume and (run / "last.pt").exists():
         state = torch.load(run / "last.pt", map_location=device, weights_only=True)
+        if not state.get("epoch_complete", False):
+            raise SystemExit(
+                "last.pt was written mid-epoch (divergence or --max-steps); resume needs a completed epoch"
+            )
+        if state.get("divergence"):
+            raise SystemExit(
+                f"this run diverged ({state['divergence']}); restart with LR x 0.5 under a new --run"
+            )
         model.load_state_dict(state["model"])
         opt.load_state_dict(state["opt"])
         scaler.load_state_dict(state["scaler"])
         start_epoch, step = state["epoch"] + 1, state["step"]
+        counters.update(state.get("counters", {}))
+        dev_loss_hist = list(state.get("dev_loss", []))
+        if "rng" in state:
+            restore_rng(state["rng"], rng, device)
 
     meta = {
         "args": vars(args),
@@ -155,6 +234,8 @@ def main(argv: list[str] | None = None) -> None:
         "n_params": n_params,
         "steps_per_epoch": steps_per_epoch,
         "total_steps": total_steps,
+        "step_definition": "optimizer step attempts; `updates` counts the non-skipped ones",
+        "dev_loss_rule": "divergence when dev CTC loss after epoch 3 >= after epoch 1 (skipped with --init)",
         "git": git_commit(),
         "torch": torch.__version__,
         "cudnn": torch.backends.cudnn.version(),
@@ -164,9 +245,6 @@ def main(argv: list[str] | None = None) -> None:
     }
     (run / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     log = open(run / "train.jsonl", "a", encoding="utf-8")
-    rng = random.Random(args.seed)
-    nan_count, low_scale_streak, skipped = 0, 0, 0
-    divergence = None
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
@@ -192,8 +270,8 @@ def main(argv: list[str] | None = None) -> None:
                 loss, parts = total_loss(logits, inter, out_lengths, targets, target_lengths, cfg.sc_weight)
             opt.zero_grad(set_to_none=True)
             if not torch.isfinite(loss):
-                nan_count += 1
-                skipped += 1
+                counters["nan_count"] += 1
+                counters["skipped"] += 1
             else:
                 scaler.scale(loss).backward()
                 scaler.unscale_(opt)
@@ -201,18 +279,17 @@ def main(argv: list[str] | None = None) -> None:
                 scale_before = scaler.get_scale()
                 scaler.step(opt)
                 scaler.update()
-                if scaler.get_scale() < scale_before:
-                    skipped += 1
+                if scaler.get_scale() < scale_before:  # the scaler found inf/nan grads and skipped the step
+                    counters["skipped"] += 1
+                else:
+                    counters["updates"] += 1
                 parts["grad_norm"] = grad_norm
             scale = scaler.get_scale() if use_amp else 1.0
-            low_scale_streak = low_scale_streak + 1 if (use_amp and scale < 1.0) else 0
-            if nan_count >= 3 or low_scale_streak >= 100:
-                divergence = {
-                    "epoch": epoch,
-                    "step": step,
-                    "nan_count": nan_count,
-                    "low_scale_streak": low_scale_streak,
-                }
+            counters["low_scale_streak"] = (
+                counters["low_scale_streak"] + 1 if (use_amp and scale < 1.0) else 0
+            )
+            if counters["nan_count"] >= 3 or counters["low_scale_streak"] >= 100:
+                divergence = {"reason": "nan_or_scale", "epoch": epoch, "step": step, **counters}
             compute += time.perf_counter() - t_step
             if step % args.log_every == 0:
                 rec = {
@@ -220,8 +297,9 @@ def main(argv: list[str] | None = None) -> None:
                     "step": step,
                     "lr": opt.param_groups[0]["lr"],
                     "scale": scale,
-                    "skipped": skipped,
-                    "nan": nan_count,
+                    "skipped": counters["skipped"],
+                    "updates": counters["updates"],
+                    "nan": counters["nan_count"],
                     "chunk": spec.chunk_size,
                     "left": spec.left_context,
                     "batch": len(batch["ids"]),
@@ -236,64 +314,79 @@ def main(argv: list[str] | None = None) -> None:
                 break
             t_wait = time.perf_counter()
         epoch_time = time.perf_counter() - t_epoch
+        base = {
+            "epoch": epoch,
+            "step": step,
+            "epoch_time_s": epoch_time,
+            "wait_s": wait,
+            "compute_s": compute,
+            "mem_gb": torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else None,
+            **counters,
+        }
         if divergence or (args.max_steps and step >= args.max_steps):
-            summary = {
-                "epoch": epoch,
-                "step": step,
-                "epoch_time_s": epoch_time,
-                "wait_s": wait,
-                "compute_s": compute,
-                "divergence": divergence,
-                "stopped_early": True,
-            }
+            summary = {**base, "divergence": divergence, "stopped_early": True}
             (run / "epochs.jsonl").open("a", encoding="utf-8").write(json.dumps(summary) + "\n")
             print(json.dumps(summary), flush=True)
-            torch.save(
-                {
-                    "model": model.state_dict(),
-                    "opt": opt.state_dict(),
-                    "scaler": scaler.state_dict(),
-                    "epoch": epoch,
-                    "step": step,
-                    "config": asdict(cfg),
-                },
+            save_checkpoint(
                 run / "last.pt",
+                model,
+                opt,
+                scaler,
+                cfg,
+                epoch,
+                step,
+                counters,
+                dev_loss_hist,
+                rng,
+                device,
+                False,
+                divergence,
             )
             break
         model.eval()
         dev_results = {}
         for dev in args.devs.split(","):
             dev_results[dev] = {
-                "full": evaluate_manifest(model, vocab, dev, ChunkSpec(0, -1), device, logmel=logmel)[
-                    "cer_ns"
-                ],
+                "full": evaluate_manifest(
+                    model, vocab, dev, ChunkSpec(0, -1), device, logmel=logmel, amp=use_amp
+                )["cer_ns"],
                 f"chunk{args.eval_chunk}": evaluate_manifest(
-                    model, vocab, dev, ChunkSpec(args.eval_chunk, 128), device, logmel=logmel
+                    model, vocab, dev, ChunkSpec(args.eval_chunk, 128), device, logmel=logmel, amp=use_amp
                 )["cer_ns"],
             }
-        summary = {
-            "epoch": epoch,
-            "step": step,
-            "epoch_time_s": epoch_time,
-            "wait_s": wait,
-            "compute_s": compute,
-            "skipped": skipped,
-            "nan": nan_count,
-            "mem_gb": torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else None,
-            "dev": dev_results,
-        }
+        dev_loss = ctc_loss_manifest(model, vocab, args.dev_loss_set, device, logmel=logmel, amp=use_amp)
+        dev_loss_hist.append(dev_loss)
+        not_decreasing = len(dev_loss_hist) >= 3 and not (dev_loss_hist[2] < dev_loss_hist[0])  # NaN counts
+        if not args.init and epoch == 2 and not_decreasing:
+            divergence = {
+                "reason": "dev_loss_not_decreasing",
+                "epoch": epoch,
+                "step": step,
+                "dev_loss": dev_loss_hist[:3],
+            }
+        summary = {**base, "dev": dev_results, "dev_loss": dev_loss, "dev_loss_set": args.dev_loss_set}
+        if divergence:
+            summary["divergence"] = divergence
         (run / "epochs.jsonl").open("a", encoding="utf-8").write(json.dumps(summary) + "\n")
         print(json.dumps(summary), flush=True)
-        state = {
-            "model": model.state_dict(),
-            "opt": opt.state_dict(),
-            "scaler": scaler.state_dict(),
-            "epoch": epoch,
-            "step": step,
-            "config": asdict(cfg),
-        }
-        torch.save(state, run / f"epoch-{epoch:03d}.pt")
-        torch.save(state, run / "last.pt")
+        for path in (run / f"epoch-{epoch:03d}.pt", run / "last.pt"):
+            save_checkpoint(
+                path,
+                model,
+                opt,
+                scaler,
+                cfg,
+                epoch,
+                step,
+                counters,
+                dev_loss_hist,
+                rng,
+                device,
+                True,
+                divergence,
+            )
+        if divergence:
+            break
     log.close()
 
 

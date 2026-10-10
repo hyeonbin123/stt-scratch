@@ -17,8 +17,9 @@ from stt_scratch.data import PcmStore, read_manifest
 from stt_scratch.metrics import score_ns, score_ws, summarize
 from stt_scratch.model.config import ModelConfig
 from stt_scratch.model.conformer import ChunkConformerCTC
+from stt_scratch.model.ctc import ctc_loss
 from stt_scratch.model.decode import GreedyState, greedy_batch
-from stt_scratch.model.features import LogMel, StreamingFbank
+from stt_scratch.model.features import FIRST_PACKET_EXTRA, LogMel, StreamingFbank
 from stt_scratch.model.mask import ChunkSpec
 from stt_scratch.model.streaming import StreamingEncoder
 from stt_scratch.text import Vocab
@@ -34,9 +35,13 @@ def load_model(path: Path, device: torch.device) -> tuple[ChunkConformerCTC, dic
     return model.to(device).eval(), state
 
 
-@torch.no_grad()
-def decode_offline(model, vocab, utts, store, spec: ChunkSpec, device, logmel, batch_seconds: float = 400.0):
-    hyps: dict[str, str] = {}
+def autocast(device, amp: bool):
+    """The precision used for every decoding/loss path: fp16 autocast on CUDA when amp (training default)."""
+    return torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp and device.type == "cuda")
+
+
+def duration_batches(utts, batch_seconds: float):
+    """Indices sorted by duration, grouped so that padded seconds (longest * count) stay under the budget."""
     order = sorted(range(len(utts)), key=lambda i: utts[i].duration_s)
     i = 0
     while i < len(order):
@@ -48,13 +53,26 @@ def decode_offline(model, vocab, utts, store, spec: ChunkSpec, device, logmel, b
             batch.append(order[i])
             longest = max(longest, d)
             i += 1
-        wavs = [store.waveform(utts[j].id).to(device) for j in batch]
-        lengths = torch.tensor([w.numel() for w in wavs], device=device)
-        padded = torch.zeros(len(wavs), int(lengths.max()), device=device)
-        for k, w in enumerate(wavs):
-            padded[k, : w.numel()] = w
-        mel, frames = logmel(padded, lengths)
-        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=device.type == "cuda"):
+        yield batch
+
+
+def batch_features(utts, batch, store, device, logmel):
+    wavs = [store.waveform(utts[j].id).to(device) for j in batch]
+    lengths = torch.tensor([w.numel() for w in wavs], device=device)
+    padded = torch.zeros(len(wavs), int(lengths.max()), device=device)
+    for k, w in enumerate(wavs):
+        padded[k, : w.numel()] = w
+    return logmel(padded, lengths)
+
+
+@torch.no_grad()
+def decode_offline(
+    model, vocab, utts, store, spec: ChunkSpec, device, logmel, batch_seconds: float = 400.0, amp: bool = True
+):
+    hyps: dict[str, str] = {}
+    for batch in duration_batches(utts, batch_seconds):
+        mel, frames = batch_features(utts, batch, store, device, logmel)
+        with autocast(device, amp):
             logits, _, out_lengths = model(mel, frames, spec)
         for j, ids in zip(batch, greedy_batch(logits.float(), out_lengths), strict=True):
             hyps[utts[j].id] = vocab.decode(ids)
@@ -62,33 +80,57 @@ def decode_offline(model, vocab, utts, store, spec: ChunkSpec, device, logmel, b
 
 
 @torch.no_grad()
-def decode_streaming(model, vocab, utts, store, spec: ChunkSpec, device, logmel):
-    """Real cache streaming: audio fed in pieces of 4 * chunk_size * 160 samples (320 ms for chunk 8)."""
+def decode_streaming(model, vocab, utts, store, spec: ChunkSpec, device, logmel, amp: bool = True):
+    """Real cache streaming: audio fed in packets of 4 * chunk_size * 160 samples (320 ms for chunk 8); the
+    first packet carries FIRST_PACKET_EXTRA more samples so that every packet completes one encoder chunk.
+    Runs under the same autocast as the offline paths so that differences come from the cache, not dtype."""
     enc = StreamingEncoder(model, spec)
     samples_per_chunk = spec.chunk_size * 4 * 160
     hyps: dict[str, str] = {}
-    for u in utts:
-        wav = store.waveform(u.id).to(device)
-        fb = StreamingFbank(logmel)
-        state = enc.new_state()
-        greedy = GreedyState()
-        pending = torch.zeros(0, 80, device=device)
-        n_frames = 0
-        pos = 0
-        while pos < wav.numel():
-            piece = wav[pos : pos + samples_per_chunk]
-            pos += samples_per_chunk
-            pending = torch.cat([pending, fb.push(piece)], dim=0)
-            while pending.shape[0] >= 4 * spec.chunk_size:
-                mel_chunk, pending = pending[: 4 * spec.chunk_size], pending[4 * spec.chunk_size :]
-                lp = enc.step(mel_chunk, state)
+    with autocast(device, amp):
+        for u in utts:
+            wav = store.waveform(u.id).to(device)
+            fb = StreamingFbank(logmel)
+            state = enc.new_state()
+            greedy = GreedyState()
+            pending = torch.zeros(0, 80, device=device)
+            n_frames = 0
+            pos, packet = 0, samples_per_chunk + FIRST_PACKET_EXTRA
+            while pos < wav.numel():
+                piece = wav[pos : pos + packet]
+                pos += packet
+                packet = samples_per_chunk
+                pending = torch.cat([pending, fb.push(piece)], dim=0)
+                while pending.shape[0] >= 4 * spec.chunk_size:
+                    mel_chunk, pending = pending[: 4 * spec.chunk_size], pending[4 * spec.chunk_size :]
+                    lp = enc.step(mel_chunk, state)
+                    greedy.push(lp, n_frames)
+                    n_frames += lp.shape[0]
+            if pending.shape[0] > 0:  # partial last chunk: the causal front-end handles any length exactly
+                lp = enc.step(pending, state)
                 greedy.push(lp, n_frames)
-                n_frames += lp.shape[0]
-        if pending.shape[0] > 0:  # partial last chunk: the causal front-end handles any length exactly
-            lp = enc.step(pending, state)
-            greedy.push(lp, n_frames)
-        hyps[u.id] = vocab.decode(greedy.tokens)
+            hyps[u.id] = vocab.decode(greedy.tokens)
     return hyps
+
+
+@torch.no_grad()
+def ctc_loss_manifest(
+    model, vocab, name: str, device, logmel=None, amp: bool = True, batch_seconds: float = 400.0
+) -> float:
+    """Mean per-utterance CTC loss of the final head with full context (the dev-loss divergence check)."""
+    utts = read_manifest(ROOT / "manifests" / f"{name}.jsonl")
+    store = PcmStore(ROOT / "data" / "pcm", name)
+    logmel = logmel or LogMel().to(device)
+    total = 0.0
+    for batch in duration_batches(utts, batch_seconds):
+        mel, frames = batch_features(utts, batch, store, device, logmel)
+        tokens = [vocab.encode(utts[j].text) for j in batch]
+        targets = torch.tensor([t for seq in tokens for t in seq], device=device, dtype=torch.int32)
+        target_lengths = torch.tensor([len(seq) for seq in tokens], device=device, dtype=torch.int32)
+        with autocast(device, amp):
+            logits, _, out_lengths = model(mel, frames, ChunkSpec(0, -1))
+            total += float(ctc_loss(logits, out_lengths, targets, target_lengths))
+    return total / len(utts)
 
 
 def score(utts, hyps: dict[str, str]) -> dict:
@@ -111,23 +153,25 @@ def evaluate_manifest(
     streaming: bool = False,
     out_path: Path | None = None,
     checkpoint: str = "",
+    amp: bool = True,
 ) -> dict:
     utts = read_manifest(ROOT / "manifests" / f"{name}.jsonl")
     store = PcmStore(ROOT / "data" / "pcm", name)
     logmel = logmel or LogMel().to(device)
     if streaming:
-        hyps = decode_streaming(model, vocab, utts, store, spec, device, logmel)
+        hyps = decode_streaming(model, vocab, utts, store, spec, device, logmel, amp=amp)
         mode = f"streaming chunk{spec.chunk_size} left{spec.left_context}"
     elif spec.full:
-        hyps = decode_offline(model, vocab, utts, store, spec, device, logmel)
+        hyps = decode_offline(model, vocab, utts, store, spec, device, logmel, amp=amp)
         mode = "full"
     else:
-        hyps = decode_offline(model, vocab, utts, store, spec, device, logmel)
+        hyps = decode_offline(model, vocab, utts, store, spec, device, logmel, amp=amp)
         mode = f"simulated chunk{spec.chunk_size} left{spec.left_context}"
     scored = score(utts, hyps)
     result = {
         "manifest": name,
         "mode": mode,
+        "precision": "fp16-autocast" if amp and device.type == "cuda" else "fp32",
         "checkpoint": checkpoint,
         "n": len(utts),
         **scored,
@@ -152,6 +196,7 @@ def main(argv: list[str] | None = None) -> None:
         "--streaming", action="store_true", help="real cache streaming instead of a simulated mask"
     )
     p.add_argument("--out", default="")
+    p.add_argument("--fp32", action="store_true", help="no fp16 autocast (for models trained with --fp32)")
     args = p.parse_args(argv)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, _ = load_model(ROOT / args.checkpoint, device)
@@ -166,6 +211,7 @@ def main(argv: list[str] | None = None) -> None:
         streaming=args.streaming,
         out_path=ROOT / args.out if args.out else None,
         checkpoint=args.checkpoint,
+        amp=not args.fp32,
     )
     print(
         json.dumps({k: v for k, v in result.items() if k != "all" and k != "hangul_only"}, ensure_ascii=False)

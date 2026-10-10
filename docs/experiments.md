@@ -70,14 +70,20 @@
 - 데이터(`reports/stage0/data_summary.md`, `scripts/prepare_data.py`): 학습 21,853발화 51.77 h(Zeroth 46.11 + FLEURS 4.75 + CV22 0.91), dev_mix 700발화 1.46 h, dev_h 1,113발화 2.65 h, test_zeroth 457, test_h 1,280발화 2.92 h, test_fleurs 382, test_cv 472. 학습 제외 844발화 3.19 h(숫자 619, 라틴 200, 20 s 초과 24, 모두 FLEURS; CV22 오디오 결손 1). 홀드아웃 H 318문장 2,393발화(10.6 %), dev_h 151문장, test_h 167문장, 서로 겹침 없음. 어휘 1,288(음절 1,285). 평가 세트 OOV 음절 비율 0.005~0.37 %. 학습 토큰률 p50 6.55 / p95 8.01 / 최대 10.64 토큰/s
 - **H0.1 충족**: 25 fps CTC 길이 제약 위반 0 / 21,853 (0.000 %)
 - 참고: Zeroth 공식 test 423문장 중 367개는 학습 세트에, 55개는 홀드아웃 H에 있다(본 문장 조건은 그대로)
-- 단위 테스트: `tests/test_model.py` 21개 + `tests/test_prepare_data.py` 13개 통과(미래 누출 없음, 캐시 스트리밍 == 오프라인 청크 마스크 fp32 최대 차이 < 1e-5, 부분 마지막 청크 포함, 패딩 불변, 스트리밍 fbank == 오프라인, autocast 아래 CTC 입력 fp32, 분할 conv가 독립 unfold 구현과 일치, 합성 20발화 과적합 CER 0)
+- 단위 테스트: `tests/test_model.py` 29개(파라미터 확장 기준, 0단계 커밋 시점) + `tests/test_prepare_data.py` 13개 통과(미래 누출 없음, 캐시 스트리밍 == 오프라인 청크 마스크 fp32 최대 차이 < 1e-5, 부분 마지막 청크 포함, 패딩 불변, 스트리밍 fbank == 오프라인, autocast 아래 CTC 입력 fp32, 분할 conv가 독립 unfold 구현과 일치, 합성 20발화 과적합 CER 0)
 - 마이크로벤치(`reports/stage0/bench.json`, RTX 2080 Ti, fp16, 동적 청크·속도 교란·SpecAugment 포함, 30 step 평균): max-duration 300 s → 피크 4.31 GB, 0.663 s/step, 697 step/epoch, **epoch 약 7.8분**, 평균 배치 32발화, 데이터 대기 1.1 %; 400 s → 5.62 GB, 0.685 s/step, 6.0분. 200·600 s도 OOM 없음(600 s 8.9 GB). SDPA는 flash 커널 불가(sm_75), memory-efficient 커널 사용. `is_bf16_supported(including_emulation=False)` = False 확인
 - **H0.2 충족**(300 s 피크 ≤ 9.5 GB, epoch ≤ 8분). 100 epoch ≈ 13 h로 예산 규칙(14 h) 안이므로 2단계는 100 epoch, max-duration 300 s 그대로
 - 측정 중 고친 것: 처음 벤치는 `cudnn.benchmark=True`로 돌려 1.36 s/step(배치 모양이 매번 달라 cuDNN 자동 튜닝이 step마다 돌았음)이었고, 끄자 0.66 s/step. 분할 depthwise conv를 unfold 구현에서 grouped conv1d + 청크 끝 보정으로 바꿨다(출력은 독립 구현과 1e-5 안에서 같음, 테스트 추가). step 시간은 배치 크기(13~55발화)와 무관하게 약 0.65 s로 GPU 연산(약 0.14 s)보다 커널 실행·Python 오버헤드가 지배한다. Windows라 torch.compile(Triton)은 쓸 수 없어 그대로 둔다
 
+### 0단계 결과 보강 (2026-10-11, 1단계 측정 전)
+- **1단계 첫 시도 무효**: LR 1e-3 시드 1·2·3이 모두 100~120 step에서 scale < 1.0 100 step 연속으로 멈췄다. 원인은 fp16 불안정이 아니라 CTC 손실 코드의 버그 둘(패딩 프레임의 초기화되지 않은 CTC 기울기, 전치된 비연속 log-prob 뷰에서 CUDA CTC backward 오류; `docs/ai-verification.md`). 수정 뒤 실패 배치 16시드에서 NaN 0회. 세 런은 발산 횟수 표에 "코드 버그로 무효"로만 적고 H1에 넣지 않는다(`reports/stage1/attempt1-invalid-summary.json`)
+- **독립 검토 반영**: Codex 0단계 검토 16건을 모두 반영했다(규칙 변경 1~10, `docs/ai-verification.md`). 테스트는 56개(`test_model` 38, `test_prepare_data` 13, `test_service` 5)
+- **fp16 게이트 실측**(RTX 2080 Ti, 실제 크기 12층 d=256 1,288 클래스, 무작위 초기화, 800 mel 프레임): 캐시 스트리밍 vs 오프라인 청크 마스크 log-prob 최대 절대차 fp16 autocast 3.4e-3~4.0e-3(청크 4/64, 8/128, 16/128; 캐시 절단 포함), fp32 ≤ 2.9e-6 → 등록 게이트(fp16 1e-2, fp32 1e-5) 충족. fp16에서 청크 경계 뒤 음성을 바꿔도 경계 앞 출력은 비트 단위로 같다(BACON 우측 탭을 가린 뒤 더하는 구현)
+- 학습 루프 연기 실행(12 step): 시작 scale 65,536이 256까지 내려오는 동안 8 step 스킵, 이후 업데이트. 이 초기 스킵은 GradScaler의 정상 동작이라 발산 규칙(scale < 1.0)과 무관하다
+
 ## 1단계: fp16 안정성·peak LR (2026-10-11 규칙, 측정 전)
 
-- 후보: peak LR {1e-3, 2e-3} × 시드 {1, 2, 3}, warmup 4,000 step, 최종 구성 그대로 5 epoch
+- 후보: peak LR {1e-3, 2e-3} × 시드 {1, 2, 3}, warmup 2,000 step(규칙 변경 1; 원래 4,000), 최종 구성 그대로 5 epoch
 - 측정: 런별 발산 여부(위 정의), epoch 5의 dev_mix·dev_H CER_ns(full greedy), GradScaler 스킵 횟수와 scale 이력
 - **H1**: 2e-3에서 발산 ≤ 1/3
 - 판정: 발산 0/3인 LR 가운데 epoch 5 dev_mix 평균이 낮은 쪽을 채택. 둘 다 발산이 있으면 5e-4·warmup 8,000을 더해 반복. 채택 LR의 3시드 표준편차를 s로 기록
@@ -134,4 +140,18 @@ Run A와 같은 step 수·LR·시드. 우선순위 순서, 예산 초과 시 d�
 - test 뒤에는 모델·규칙을 바꾸지 않는다
 
 ## 규칙 변경
-(없음)
+
+모두 2026-10-11, 1단계 측정 전(1단계 첫 시도는 코드 버그로 무효 처리, 0단계 결과 보강 참조). 독립 검토(Codex, `docs/ai-verification.md`)의 지적을 반영했다.
+
+1. **warmup 4,000 → 2,000 step(모든 단계)**. 1단계 5 epoch = 3,485 step이라 warmup 4,000 안에서 끝나 peak LR에 닿지 않는다(마지막 LR이 peak의 87 %). 2,000 step ≈ 2.9 epoch. 2단계(69,700 step)도 2,000
+2. **step 정의**: "같은 업데이트 step 수"를 "같은 optimizer step 시도 횟수"로 읽는다. LR 스케줄·예산·동일 비교는 시도 횟수 기준이고, GradScaler가 건너뛴 횟수(`skipped`)와 실제 업데이트 수(`updates`)를 모든 런에서 함께 기록·보고한다
+3. **dev CTC 손실 발산 조건 구체화**: 매 epoch 끝에 dev_mix의 최종 헤드 CTC 손실(full context, 발화 평균, 학습과 같은 정밀도)을 기록하고, **epoch 3 끝 값 ≥ epoch 1 끝 값**이면 발산으로 판정해 런을 멈춘다. 처음부터 학습하는 런에만 적용(`--init`로 이어 학습하는 4단계에는 적용하지 않음)
+4. **라틴 제외 문구**: "라틴 문자만 든 발화"를 "라틴 문자가 하나라도 든 발화"로 고친다. 코드와 0단계 보고(라틴 200건)가 이미 이 규칙이었고, 어휘가 한글 음절뿐이라는 의도에 맞다
+5. **어휘 생성 순서**: 어휘는 CTC 길이 제외까지 모든 학습 제외를 적용한 뒤의 학습 전사로 만든다(스크립트 순서 변경). 현재 매니페스트는 CTC 제외가 0건이라 결과가 같다(최종 `train.jsonl`에서 다시 만든 어휘 == `manifests/vocab.json` 확인)
+6. **평가 세트 고정**: 정규화 뒤 빈 전사나 오디오 결손이 평가 세트(dev_mix, dev_H, 봉인 test)에서 나오면 전처리를 중단한다(조용히 축소하지 않음). 현재 매니페스트는 평가 세트 누락 0건(`reports/stage0/data_summary.json`의 `dropped_empty_text`, `dropped_missing_audio_eval` 비어 있음)
+7. **`<unk>` 평가 표기**: 디코딩 결과의 `<unk>`는 U+318D(ㆍ, 한글 자모 아래아)로 바꾼다. CER_ns의 점수 정규화가 이 글자를 남기고, CER_ws의 학습 정규화도 가설 쪽에서는 이 글자를 남기도록 하여 두 지표 모두에서 `<unk>` 하나가 오류 1자로 센다(이전 구현은 "unk" 세 글자로 풀려 라틴 정답과 맞을 수 있었음). 정답에는 이 글자가 나올 수 없다
+8. **평가 정밀도**: full·simulated·real streaming 디코딩과 dev 손실은 모두 학습과 같은 autocast fp16(GPU)으로 계산하고 결과에 `precision`을 적는다(`--fp32` 학습 모델은 fp32). H6.1의 차이가 캐시 때문인지 정밀도 때문인지 가리기 위함
+9. **스트리밍 패킷 규약**: 첫 패킷 5,360 샘플(5,120 + 240), 이후 5,120 샘플. 그래야 패킷마다 mel 32프레임 = 인코더 청크 1개가 나온다(아니면 첫 청크가 두 번째 패킷까지 기다려 320 ms가 더 늦음). 6단계 지연 측정과 브라우저 클라이언트도 이 규약
+10. **재개 규칙**: 체크포인트는 완료 epoch만 재개할 수 있고(난수 상태·발산 카운터·dev 손실 이력 포함), 중간에 멈춘 `last.pt`와 발산 판정을 받은 런은 재개를 거부한다. 같은 `--run` 디렉터리에 로그가 이미 있으면 `--resume` 없이는 시작하지 않는다(이전 시도의 로그가 섞이지 않게)
+11. **fp16 스트리밍 게이트의 추가 보고**: 0단계 게이트(fp16 log-prob 최대 절대차 ≤ 1e-2)는 무작위 초기화 모델에서 쟀다. 학습된 모델은 희박 클래스의 log-prob 절댓값이 커서 fp16 반올림만으로 1e-2를 넘을 수 있으므로(검토 지적), 2단계 끝에 같은 비교를 다시 재고 log-prob 차이와 함께 **확률 최대 절대차와 프레임 argmax 일치율**을 보고한다. H6.1(CER 차이 ≤ 0.1)이 판정 기준이고 log-prob 게이트는 캐시 버그 탐지용이다
+12. **서비스 경로 정밀도·버퍼**: 서비스 세션도 평가와 같은 autocast fp16으로 돌리고 `/info`에 precision을 적는다. 끝점에서는 인식 상태(greedy·끝점 카운터·캐시)만 초기화하고 버퍼의 mel 프레임과 fbank 캐리는 버리지 않는다(검토에서 세그먼트마다 300 ms 음성 손실과 320 ms 추가 지연이 생기는 결함 발견). 서버는 flush 뒤 청크당 계산 시간 p50/p90을 보내고 6단계 H6.2는 이 값으로 잰다
