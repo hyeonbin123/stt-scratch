@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stt-scratch 스트리밍 자막</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1a; --muted: #6b6b6b; --accent: #1a4fa0; --box: #f4f4f4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121212; --fg: #ececec; --muted: #9a9a9a; --accent: #7aa7ff; --box: #1e1e1e; }
+  }
+  body { margin: 0; padding: 16px; font-family: system-ui, "Malgun Gothic", sans-serif; background: var(--bg); color: var(--fg); }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  #final { background: var(--box); border-radius: 8px; padding: 12px; min-height: 120px; white-space: pre-wrap; line-height: 1.6; font-size: 18px; }
+  #partial { color: var(--accent); }
+  .meta { color: var(--muted); font-size: 13px; }
+  table { border-collapse: collapse; font-size: 13px; }
+  td { padding: 2px 10px 2px 0; }
+</style>
+</head>
+<body>
+<h1>stt-scratch 스트리밍 자막 (로컬 데모)</h1>
+<div class="row">
+  <button id="start">마이크 시작</button>
+  <button id="stop" disabled>멈춤</button>
+  <span class="meta" id="status">대기</span>
+</div>
+<div id="final"><span id="partial"></span></div>
+<table class="meta" style="margin-top:8px">
+  <tr><td>서버 설정</td><td id="info">-</td></tr>
+  <tr><td>보낸 청크</td><td id="sent">0</td></tr>
+  <tr><td>마지막 부분 자막 지연(보낸 뒤 → 받음)</td><td id="lat">-</td></tr>
+  <tr><td>세그먼트</td><td id="seg">0</td></tr>
+  <tr><td>청크당 계산 시간(flush 뒤)</td><td id="stats">-</td></tr>
+</table>
+<p class="meta">320 ms마다 16 kHz PCM을 보내고, 서버는 청크마다 추가된 글자만 돌려줍니다(부분 자막은 수정되지 않음). 끝점 규칙이 켜지면 세그먼트가 닫힙니다.</p>
+<script>
+const CHUNK_MS = 320, RATE = 16000, CHUNK_SAMPLES = RATE * CHUNK_MS / 1000;
+const FIRST_SAMPLES = CHUNK_SAMPLES + 240; // the first packet carries the 240 extra samples of one frame window
+let ctx, source, node, ws, sentChunks = 0, sendTimes = [], committed = "", segment = 0;
+const $ = id => document.getElementById(id);
+
+async function loadInfo() {
+  try { const r = await fetch("/info"); const j = await r.json();
+    $("info").textContent = `청크 ${j.chunk_ms} ms, 좌측 ${j.left_frames}프레임, ${j.device}, 끝점 rule2 ${j.endpoint.rule2_s}s`; } catch (e) {}
+}
+loadInfo();
+
+const workletCode = `
+class PcmSender extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = []; this.n = 0; this.limit = ${FIRST_SAMPLES}; this.port.onmessage = () => this.emit(); }
+  emit() {
+    if (!this.n) return;
+    const out = new Float32Array(this.n); let o = 0;
+    for (const b of this.buf) { out.set(b, o); o += b.length; }
+    this.buf = []; this.n = 0; this.limit = ${CHUNK_SAMPLES}; this.port.postMessage(out, [out.buffer]);
+  }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0]; if (!ch) return true;
+    this.buf.push(Float32Array.from(ch)); this.n += ch.length;
+    if (this.n >= this.limit) this.emit();  // "drain" messages call emit() for the remainder
+    return true;
+  }
+}
+registerProcessor("pcm-sender", PcmSender);`;
+
+function floatToInt16(f32) {
+  const out = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) { const s = Math.max(-1, Math.min(1, f32[i])); out[i] = s < 0 ? s * 32768 : s * 32767; }
+  return out;
+}
+
+$("start").onclick = async () => {
+  $("start").disabled = true;
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false } });
+    ctx = new AudioContext({ sampleRate: RATE });
+    if (ctx.sampleRate !== RATE) { $("status").textContent = `브라우저가 ${ctx.sampleRate} Hz로 열었습니다(16 kHz 필요)`; }
+    const blob = new Blob([workletCode], { type: "application/javascript" });
+    await ctx.audioWorklet.addModule(URL.createObjectURL(blob));
+    source = ctx.createMediaStreamSource(stream);
+    node = new AudioWorkletNode(ctx, "pcm-sender");
+    node.port.onmessage = ev => {
+      if (ws.readyState !== 1) return;
+      ws.send(floatToInt16(ev.data).buffer);
+      sentChunks += 1; sendTimes.push(performance.now()); $("sent").textContent = sentChunks;
+    };
+    source.connect(node); node.connect(ctx.destination);
+    $("status").textContent = "듣는 중"; $("stop").disabled = false;
+  };
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "partial") {
+      $("partial").textContent = m.text;
+      if (sendTimes.length) $("lat").textContent = `${Math.round(performance.now() - sendTimes[sendTimes.length - 1])} ms (계산 ${m.compute_ms} ms)`;
+    } else if (m.type === "final") {
+      committed += (committed ? "\n" : "") + m.text; segment = m.segment + 1; $("seg").textContent = segment;
+      $("final").childNodes[0].nodeValue = committed + "\n"; $("partial").textContent = "";
+    } else if (m.type === "stats" && m.chunks) {
+      $("stats").textContent = `${m.chunks} chunks, p50 ${m.compute_ms_p50.toFixed(1)} ms, p90 ${m.compute_ms_p90.toFixed(1)} ms`;
+    } else if (m.type === "stats" && m.chunks) {
+      $("stats").textContent = `${m.chunks} chunks, p50 ${m.compute_ms_p50.toFixed(1)} ms, p90 ${m.compute_ms_p90.toFixed(1)} ms`;
+    }
+  };
+  ws.onclose = () => { $("status").textContent = "연결 끊김"; };
+};
+
+$("stop").onclick = () => {
+  $("stop").disabled = true;
+  if (node) node.port.postMessage("drain");  // send the buffered remainder (< 320 ms) before flushing
+  setTimeout(() => {
+    if (node) { node.disconnect(); source.disconnect(); }
+    if (ctx) ctx.close();
+    if (ws && ws.readyState === 1) { ws.send("flush"); setTimeout(() => ws.close(), 1500); }
+  }, 150);
+  $("status").textContent = "멈춤"; $("start").disabled = false;
+};
+// the final box keeps committed text as its first text node
+$("final").insertBefore(document.createTextNode(""), $("partial"));
+</script>
+</body>
+</html>
