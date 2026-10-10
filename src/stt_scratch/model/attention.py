@@ -24,7 +24,9 @@ def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.T
 
 
 class RelPosSelfAttention(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, dropout: float, theta: float) -> None:
+    def __init__(
+        self, d_model: int, n_heads: int, dropout: float, theta: float, qk_norm: bool = False
+    ) -> None:
         super().__init__()
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
@@ -32,6 +34,11 @@ class RelPosSelfAttention(nn.Module):
         self.qkv = nn.Linear(d_model, 3 * d_model)
         self.out = nn.Linear(d_model, d_model)
         self.dropout = dropout
+        # QK-LayerNorm (per head, per frame, before RoPE): |q|,|k| ~ sqrt(head_dim) so the logits stay
+        # bounded (about +-sqrt(head_dim)) instead of growing with the qkv weights. Frame-local, so
+        # streaming stays exact.
+        self.q_norm = nn.LayerNorm(self.head_dim) if qk_norm else None
+        self.k_norm = nn.LayerNorm(self.head_dim) if qk_norm else None
 
     def forward(
         self,
@@ -52,6 +59,9 @@ class RelPosSelfAttention(nn.Module):
         q = q.view(b, tq, self.n_heads, self.head_dim).transpose(1, 2)
         k = k.view(b, tk, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(b, tk, self.n_heads, self.head_dim).transpose(1, 2)
+        if self.q_norm is not None:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
         cos_q, sin_q = rope_cos_sin(positions, self.head_dim, self.theta, q.dtype)
         if kv_positions is None:
             cos_k, sin_k = cos_q, sin_q

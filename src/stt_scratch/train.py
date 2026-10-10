@@ -56,6 +56,7 @@ def build_model(vocab: Vocab, args: argparse.Namespace) -> tuple[ChunkConformerC
         sc_weight=args.sc_weight,
         sc_feedback=not args.no_sc_feedback,
         bacon=not args.no_bacon,
+        qk_norm=args.qk_norm,
         full_context_prob=0.0 if args.offline_only else 0.5,
         mel_mean=stats["mean"],
         mel_std=stats["std"],
@@ -146,6 +147,19 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--max-duration", type=float, default=300.0)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--warmup", type=int, default=2000)
+    p.add_argument(
+        "--schedule-steps",
+        type=int,
+        default=0,
+        help="total steps of the warmup+cosine schedule; 0 = epochs x steps/epoch. Stage 1 runs pass the "
+        "Stage 2 total so that the short run is a truncated copy of the long schedule",
+    )
+    p.add_argument(
+        "--dev-loss-rule",
+        default="1,3",
+        help="A,B (1-based epochs): divergence when the dev CTC loss after epoch B is not below the value "
+        "after epoch A (docs/experiments.md fp16 rule, rule change 3/13); skipped with --init",
+    )
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--d-model", type=int, default=256)
     p.add_argument("--n-layers", type=int, default=12)
@@ -156,6 +170,9 @@ def main(argv: list[str] | None = None) -> None:
         "--no-sc-feedback", action="store_true", help="InterCTC only: intermediate losses, no feedback"
     )
     p.add_argument("--no-bacon", action="store_true")
+    p.add_argument(
+        "--qk-norm", action="store_true", help="LayerNorm on q and k per head (attention stability)"
+    )
     p.add_argument(
         "--offline-only", action="store_true", help="control run: full context only, no chunk masks"
     )
@@ -191,6 +208,8 @@ def main(argv: list[str] | None = None) -> None:
     loader = torch.utils.data.DataLoader(dataset, batch_sampler=sampler, collate_fn=collate, num_workers=0)
     steps_per_epoch = len(sampler)
     total_steps = steps_per_epoch * args.epochs
+    schedule_steps = args.schedule_steps or total_steps
+    rule_a, rule_b = (int(x) for x in args.dev_loss_rule.split(","))
 
     model, cfg = build_model(vocab, args)
     model.to(device)
@@ -234,8 +253,11 @@ def main(argv: list[str] | None = None) -> None:
         "n_params": n_params,
         "steps_per_epoch": steps_per_epoch,
         "total_steps": total_steps,
+        "schedule_steps": schedule_steps,
+        "dev_loss_rule": [rule_a, rule_b],
         "step_definition": "optimizer step attempts; `updates` counts the non-skipped ones",
-        "dev_loss_rule": "divergence when dev CTC loss after epoch 3 >= after epoch 1 (skipped with --init)",
+        "dev_loss_rule_text": f"divergence when dev CTC loss after epoch {rule_b} is not below the value "
+        f"after epoch {rule_a} (skipped with --init)",
         "git": git_commit(),
         "torch": torch.__version__,
         "cudnn": torch.backends.cudnn.version(),
@@ -264,7 +286,7 @@ def main(argv: list[str] | None = None) -> None:
                 else sample_chunk_spec(cfg.full_context_prob, cfg.chunk_sizes, cfg.left_contexts, rng)
             )
             for g in opt.param_groups:
-                g["lr"] = lr_at(step, total_steps, args.warmup, args.lr)
+                g["lr"] = lr_at(step, schedule_steps, args.warmup, args.lr)
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
                 logits, inter, out_lengths = model(mel, frames, spec, augment=not args.no_augment)
                 loss, parts = total_loss(logits, inter, out_lengths, targets, target_lengths, cfg.sc_weight)
@@ -356,13 +378,17 @@ def main(argv: list[str] | None = None) -> None:
             }
         dev_loss = ctc_loss_manifest(model, vocab, args.dev_loss_set, device, logmel=logmel, amp=use_amp)
         dev_loss_hist.append(dev_loss)
-        not_decreasing = len(dev_loss_hist) >= 3 and not (dev_loss_hist[2] < dev_loss_hist[0])  # NaN counts
-        if not args.init and epoch == 2 and not_decreasing:
+        not_decreasing = len(dev_loss_hist) >= rule_b and not (
+            dev_loss_hist[rule_b - 1]
+            < dev_loss_hist[rule_a - 1]  # a non-finite loss counts as not decreasing
+        )
+        if not args.init and epoch == rule_b - 1 and not_decreasing:
             divergence = {
                 "reason": "dev_loss_not_decreasing",
                 "epoch": epoch,
                 "step": step,
-                "dev_loss": dev_loss_hist[:3],
+                "rule": [rule_a, rule_b],
+                "dev_loss": dev_loss_hist[:rule_b],
             }
         summary = {**base, "dev": dev_results, "dev_loss": dev_loss, "dev_loss_set": args.dev_loss_set}
         if divergence:

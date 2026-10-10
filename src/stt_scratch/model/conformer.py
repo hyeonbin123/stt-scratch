@@ -36,7 +36,7 @@ class ConformerBlock(nn.Module):
         super().__init__()
         self.ffn1 = FeedForward(cfg.d_model, cfg.ffn_dim, cfg.dropout)
         self.attn_norm = nn.LayerNorm(cfg.d_model)
-        self.attn = RelPosSelfAttention(cfg.d_model, cfg.n_heads, cfg.dropout, cfg.rope_theta)
+        self.attn = RelPosSelfAttention(cfg.d_model, cfg.n_heads, cfg.dropout, cfg.rope_theta, cfg.qk_norm)
         self.attn_dropout = nn.Dropout(cfg.dropout)
         self.conv = ConvModule(cfg.d_model, cfg.conv_kernel, cfg.dropout, cfg.bacon)
         self.ffn2 = FeedForward(cfg.d_model, cfg.ffn_dim, cfg.dropout)

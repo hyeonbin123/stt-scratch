@@ -16,8 +16,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_one(lr: float, seed: int, epochs: int, max_duration: float, warmup: int) -> dict:
-    run = f"outputs/stage1/lr{lr:g}_seed{seed}"
+def run_one(
+    lr: float,
+    seed: int,
+    epochs: int,
+    max_duration: float,
+    warmup: int,
+    out_dir: str,
+    schedule_steps: int,
+    dev_loss_rule: str,
+) -> dict:
+    run = f"{out_dir}/lr{lr:g}_seed{seed}"
     cmd = [
         sys.executable,
         "-m",
@@ -34,6 +43,10 @@ def run_one(lr: float, seed: int, epochs: int, max_duration: float, warmup: int)
         str(max_duration),
         "--warmup",
         str(warmup),
+        "--schedule-steps",
+        str(schedule_steps),
+        "--dev-loss-rule",
+        dev_loss_rule,
     ]
     subprocess.run(cmd, cwd=ROOT, check=True)
     epochs_log = [
@@ -74,14 +87,32 @@ def main() -> None:
     p.add_argument("--seeds", default="1,2,3")
     p.add_argument("--max-duration", type=float, default=300.0)
     p.add_argument("--warmup", type=int, default=2000)
+    p.add_argument("--out-dir", default="outputs/stage1", help="run directories go under this path")
+    p.add_argument(
+        "--schedule-steps", type=int, default=69700, help="Stage 2 schedule length (697 steps x 100 epochs)"
+    )
+    p.add_argument("--dev-loss-rule", default="1,3", help="A,B epochs for the dev-loss divergence rule")
+    p.add_argument("--report-prefix", default="", help="prefix for summary/verdict files in reports/stage1")
     args = p.parse_args()
     out_dir = ROOT / "reports" / "stage1"
     out_dir.mkdir(parents=True, exist_ok=True)
+    pre = args.report_prefix
     results = []
     for lr in (float(x) for x in args.lrs.split(",")):
         for seed in (int(s) for s in args.seeds.split(",")):
-            results.append(run_one(lr, seed, args.epochs, args.max_duration, args.warmup))
-            (out_dir / "summary.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
+            results.append(
+                run_one(
+                    lr,
+                    seed,
+                    args.epochs,
+                    args.max_duration,
+                    args.warmup,
+                    args.out_dir,
+                    args.schedule_steps,
+                    args.dev_loss_rule,
+                )
+            )
+            (out_dir / f"{pre}summary.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
     lines = [
         "| LR | seed | 발산 | NaN | skipped | updates | min scale | dev loss | dev_mix | dev_h | "
         "dev_mix c16 | epoch s |",
@@ -108,8 +139,8 @@ def main() -> None:
     lines.append("|---|---|---|---|")
     for lr, v in verdict.items():
         lines.append(f"| {lr:g} | {v['failures']}/3 | {v['dev_mix_mean']} | {v['dev_mix_std']} |")
-    (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    (out_dir / "verdict.json").write_text(json.dumps(verdict, indent=1), encoding="utf-8")
+    (out_dir / f"{pre}summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (out_dir / f"{pre}verdict.json").write_text(json.dumps(verdict, indent=1), encoding="utf-8")
     print("\n".join(lines))
 
 

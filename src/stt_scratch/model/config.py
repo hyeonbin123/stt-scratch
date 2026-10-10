@@ -18,6 +18,9 @@ class ModelConfig:
     subsampling_channels: int = 256
     causal_subsampling: bool = True
     rope_theta: float = 10000.0
+    # LayerNorm on q and k per head before RoPE (bounds the attention logits; see docs/experiments.md
+    # 1단계 진단). False = the architecture as first registered.
+    qk_norm: bool = False
     # Self-conditioned CTC: 1-based block indices whose output gets an intermediate CTC head
     # and whose softmax is fed back into the next block. Empty tuple = plain CTC.
     sc_layers: tuple[int, ...] = (3, 6, 9)

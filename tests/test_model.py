@@ -108,6 +108,25 @@ def test_streaming_equals_offline(chunk: int, left: int) -> None:
     assert max_abs(streamed, offline) <= 1e-5
 
 
+def test_streaming_equals_offline_qk_norm() -> None:
+    """QK-LayerNorm is frame-local: cache streaming must stay exact and future-blind with it on."""
+    model = make_model(qk_norm=True)
+    assert model.blocks[0].attn.q_norm is not None
+    spec = ChunkSpec(8, 64)
+    t_mel = 32 * 6
+    mel = random_mel(t_mel, seed=41)
+    with torch.no_grad():
+        offline = log_probs_fp32(model(mel, torch.tensor([t_mel]), spec)[0])[0]
+        enc = StreamingEncoder(model, spec)
+        state = enc.new_state()
+        streamed = torch.cat([enc.step(mel[0, i * 32 : (i + 1) * 32], state) for i in range(6)], dim=0)
+        noisy = mel.clone()
+        noisy[:, 96:] = torch.randn_like(noisy[:, 96:]) * 5
+        out = log_probs_fp32(model(noisy, torch.tensor([t_mel]), spec)[0])[0]
+    assert max_abs(streamed, offline) <= 1e-5
+    assert max_abs(out[:24], offline[:24]) <= 1e-5
+
+
 def test_streaming_partial_last_chunk() -> None:
     """A final chunk shorter than 4 * chunk_size frames must still match the offline result."""
     model = make_model()
