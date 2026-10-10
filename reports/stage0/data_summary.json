@@ -1,0 +1,289 @@
+{
+ "created": "2026-10-11T01:34:41+09:00",
+ "rules": "docs/experiments.md \"공통\" (2026-10-11)",
+ "script": "scripts/prepare_data.py",
+ "wall_time_s": 99.4,
+ "manifests": {
+  "train": {
+   "utterances": 21853,
+   "hours": 51.77,
+   "speakers": 108,
+   "utterances_without_speaker": 1464,
+   "by_corpus": {
+    "cv22": {
+     "utterances": 519,
+     "hours": 0.911,
+     "speakers": 3
+    },
+    "fleurs": {
+     "utterances": 1464,
+     "hours": 4.748,
+     "speakers": 0
+    },
+    "zeroth": {
+     "utterances": 19870,
+     "hours": 46.111,
+     "speakers": 105
+    }
+   }
+  },
+  "dev_mix": {
+   "utterances": 700,
+   "hours": 1.459,
+   "speakers": 7,
+   "utterances_without_speaker": 226,
+   "by_corpus": {
+    "cv22": {
+     "utterances": 474,
+     "hours": 0.687,
+     "speakers": 7
+    },
+    "fleurs": {
+     "utterances": 226,
+     "hours": 0.772,
+     "speakers": 0
+    }
+   }
+  },
+  "dev_h": {
+   "utterances": 1113,
+   "hours": 2.646,
+   "speakers": 102,
+   "utterances_without_speaker": 0,
+   "by_corpus": {
+    "zeroth": {
+     "utterances": 1113,
+     "hours": 2.646,
+     "speakers": 102
+    }
+   }
+  },
+  "test_zeroth": {
+   "utterances": 457,
+   "hours": 1.191,
+   "speakers": 10,
+   "utterances_without_speaker": 0,
+   "by_corpus": {
+    "zeroth": {
+     "utterances": 457,
+     "hours": 1.191,
+     "speakers": 10
+    }
+   }
+  },
+  "test_h": {
+   "utterances": 1280,
+   "hours": 2.923,
+   "speakers": 103,
+   "utterances_without_speaker": 0,
+   "by_corpus": {
+    "zeroth": {
+     "utterances": 1280,
+     "hours": 2.923,
+     "speakers": 103
+    }
+   }
+  },
+  "test_fleurs": {
+   "utterances": 382,
+   "hours": 1.335,
+   "speakers": 0,
+   "utterances_without_speaker": 382,
+   "by_corpus": {
+    "fleurs": {
+     "utterances": 382,
+     "hours": 1.335,
+     "speakers": 0
+    }
+   }
+  },
+  "test_cv": {
+   "utterances": 472,
+   "hours": 0.669,
+   "speakers": 74,
+   "utterances_without_speaker": 0,
+   "by_corpus": {
+    "cv22": {
+     "utterances": 472,
+     "hours": 0.669,
+     "speakers": 74
+    }
+   }
+  }
+ },
+ "train_exclusions": {
+  "digit": {
+   "utterances": 619,
+   "hours": 2.256,
+   "by_corpus": {
+    "fleurs": 619
+   }
+  },
+  "latin": {
+   "utterances": 200,
+   "hours": 0.786,
+   "by_corpus": {
+    "fleurs": 200
+   }
+  },
+  "too_long": {
+   "utterances": 24,
+   "hours": 0.142,
+   "by_corpus": {
+    "fleurs": 24
+   }
+  },
+  "ctc_length": {
+   "utterances": 0,
+   "hours": 0.0,
+   "by_corpus": {}
+  },
+  "missing_audio": {
+   "utterances": 1,
+   "hours": 0.0,
+   "by_corpus": {
+    "cv22": 1
+   }
+  },
+  "total": {
+   "utterances": 844,
+   "hours": 3.185
+  }
+ },
+ "holdout": {
+  "zeroth_train_unique_sentences": 3003,
+  "zeroth_train_utterances_after_empty_drop": 22263,
+  "H": {
+   "sentences": 318,
+   "utterances": 2393
+  },
+  "dev_h": {
+   "sentences": 151,
+   "utterances": 1113
+  },
+  "test_h": {
+   "sentences": 167,
+   "utterances": 1280
+  },
+  "dev_h_test_h_sentence_overlap": 0,
+  "H_train_sentence_overlap": 0,
+  "test_zeroth_sentences_in_train": 367,
+  "test_zeroth_utterances_with_sentence_in_train": 397,
+  "test_zeroth_sentences_in_H": 55
+ },
+ "vocab": {
+  "size": 1288,
+  "syllables": 1285,
+  "path": "manifests/vocab.json"
+ },
+ "eval_oov": {
+  "dev_mix": {
+   "syllable_tokens": 20511,
+   "oov_tokens": 51,
+   "oov_types": 32,
+   "oov_token_rate": 0.002486,
+   "hangul_only_utterances": 633,
+   "hangul_only_share": 0.9043
+  },
+  "dev_h": {
+   "syllable_tokens": 47906,
+   "oov_tokens": 96,
+   "oov_types": 10,
+   "oov_token_rate": 0.002004,
+   "hangul_only_utterances": 1113,
+   "hangul_only_share": 1.0
+  },
+  "test_zeroth": {
+   "syllable_tokens": 19288,
+   "oov_tokens": 1,
+   "oov_types": 1,
+   "oov_token_rate": 5.2e-05,
+   "hangul_only_utterances": 457,
+   "hangul_only_share": 1.0
+  },
+  "test_h": {
+   "syllable_tokens": 53056,
+   "oov_tokens": 27,
+   "oov_types": 4,
+   "oov_token_rate": 0.000509,
+   "hangul_only_utterances": 1280,
+   "hangul_only_share": 1.0
+  },
+  "test_fleurs": {
+   "syllable_tokens": 16849,
+   "oov_tokens": 20,
+   "oov_types": 13,
+   "oov_token_rate": 0.001187,
+   "hangul_only_utterances": 257,
+   "hangul_only_share": 0.6728
+  },
+  "test_cv": {
+   "syllable_tokens": 9724,
+   "oov_tokens": 36,
+   "oov_types": 28,
+   "oov_token_rate": 0.003702,
+   "hangul_only_utterances": 472,
+   "hangul_only_share": 1.0
+  }
+ },
+ "train_token_rate_per_s": {
+  "p50": 6.55,
+  "p95": 8.005,
+  "max": 10.636
+ },
+ "h0_1": {
+  "checked_utterances": 21853,
+  "excluded_utterances": 0,
+  "ratio": 0.0,
+  "threshold": 0.005,
+  "pass": true
+ },
+ "dropped_empty_text": {},
+ "dropped_missing_audio_eval": {},
+ "zeroth_fleurs_resampled": {},
+ "cv_already_16k": {},
+ "audio_store": {
+  "train": {
+   "bin": "data\\pcm\\train.bin",
+   "utterances": 21853,
+   "samples": 2981935098,
+   "bytes": 5963870196
+  },
+  "dev_mix": {
+   "bin": "data\\pcm\\dev_mix.bin",
+   "utterances": 700,
+   "samples": 84066816,
+   "bytes": 168133632
+  },
+  "dev_h": {
+   "bin": "data\\pcm\\dev_h.bin",
+   "utterances": 1113,
+   "samples": 152402259,
+   "bytes": 304804518
+  },
+  "test_zeroth": {
+   "bin": "data\\pcm\\test_zeroth.bin",
+   "utterances": 457,
+   "samples": 68596038,
+   "bytes": 137192076
+  },
+  "test_h": {
+   "bin": "data\\pcm\\test_h.bin",
+   "utterances": 1280,
+   "samples": 168362351,
+   "bytes": 336724702
+  },
+  "test_fleurs": {
+   "bin": "data\\pcm\\test_fleurs.bin",
+   "utterances": 382,
+   "samples": 76878720,
+   "bytes": 153757440
+  },
+  "test_cv": {
+   "bin": "data\\pcm\\test_cv.bin",
+   "utterances": 472,
+   "samples": 38550528,
+   "bytes": 77101056
+  }
+ }
+}
