@@ -100,7 +100,7 @@
 - **원인**: 어텐션 로짓(q·k/√d) 표준편차가 epoch 1(LR ≈ 3.5e-4) 2 안팎 → epoch 2(LR 7e-4) 2~8 → epoch 3(LR 1e-3) 13~27 → 이어 학습 중 60~111로 폭주(블록 1·2·5·7). softmax가 포화하면 정렬 학습이 멈추고 기울기가 커진다(어텐션 로짓 성장 불안정; Dehghani 2023, Wortsman 2023). 가중치 노름도 계속 커짐(`subsampling.out` 10 → 48, `out_proj` 24 → 46; weight decay 1e-6은 억제력 없음)
 - **후보 처방**: (A) 사전 등록 대안 그대로 LR 5e-4·warmup 8,000; (B) q·k에 헤드별 LayerNorm(QK-norm, `--qk-norm`, 프레임 단위라 스트리밍 정확성 불변)을 넣고 1e-3·warmup 2,000. 각 4 epoch씩 2단계 스케줄(총 69,700 step) 위에서 돌려 dev 손실 추세와 로짓 표준편차를 보고 규칙 변경 13으로 확정한다. 이 진단 런들은 1단계 후보가 아니며 LR 채택에 쓰지 않는다
 
-### 1단계 결과 — 3차 시도, 판정 (2026-10-11 07:23~10:38, `reports/stage1/attempt3-*`)
+### 1단계 결과 — 3차 시도, 판정 (2026-10-11 07:23~10:11, `reports/stage1/attempt3-*`)
 규칙 변경 13의 처방(QK-norm, SpecAugment epoch 3부터, 2단계 스케줄 69,700 step 절단, warmup 2,000) 아래 peak LR {1e-3, 2e-3} × 시드 {1, 2, 3} × 5 epoch.
 
 | LR | 시드 | 발산 | dev_mix 손실(epoch 1→5) | epoch 5 dev_mix CER_ns | dev_H | dev_mix simulated chunk16/left128 | 스킵 | 최대 기울기 노름 |
