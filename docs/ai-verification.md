@@ -68,6 +68,13 @@
 - **잡은 것**: 3단계 예산 추정이 체크포인트 첫·끝 시각 차이를 써서 일시 중지·부하 구간까지 포함하던 것을 epoch 간격 중앙값으로 바꿈. 같은 epoch에서 두 번 재개하면 재개 기록을 덮어쓰던 것을 번호 붙이기로 바꿈
 - **사람이 정한 것**: 없음(3단계 설정·예산은 규칙 변경 17로 측정 전 등록)
 
+## 2026-10-12 새벽 4단계 준비 (TrimTail, Peak-First, MFA 기준 정렬, 지연 측정)
+- **만든 것**: Claude Code. 2단계 Run B가 GPU를 쓰는 동안 CPU로 작성. 학습 옵션 `--trimtail-ms`(발화 끝 0~N ms 절단, CTC 길이 조건 유지, 잘린 구간 패딩 값)와 `--peak-first-lambda`(KL(sg(p_{t+1})‖p_t)), Peak-First λ 보정 스크립트, MFA 입력 내보내기, 지연 측정 스크립트(`scripts/stage4_latency.py`: 청크 끝 도착 시각 기준 방출 시각, MFA 형태소를 어절로 다시 묶기, 편집 거리 어절 맞춤, FTD/LTD/MAD P50/P90). 측정 정의는 규칙 변경 18
+- **도구 설치**: Miniforge 26.7.2(conda-forge 공식 릴리스, GitHub 릴리스 메타데이터의 SHA-256과 대조)를 `D:\dev-tools\miniforge3`에, MFA 3.4.3 환경을 `D:\dev-tools\envs\mfa`에(패키지 캐시 `D:\dev-cache\conda-pkgs`, 모델 `D:\dev-cache\mfa`). PATH·레지스트리는 건드리지 않음. 한국어 토큰화에 `python-mecab-ko`가 필요해 MFA 환경에만 설치
+- **검증**: 새 테스트 7개(Peak-First 항의 성질, TrimTail의 길이 조건·패딩, 지연 도우미 4종). MFA 정렬 dev_mix 633/633, dev_H 1,107/1,113 정렬(6 실패), 어절 묶기 성공 dev_mix 633, dev_H 1,106
+- **잡은 것**: Peak-First λ를 증강 없는 eval 모드로 재면 학습 문장 암기 때문에 CTC 손실이 발화당 0.27이라 λ가 2.7e-5로 사실상 0이 됨 → 학습과 같은 조건(dropout·SpecAugment·속도 교란·동적 청크)에서 재도록 규칙 변경 18 문구와 스크립트를 바로잡음(시험 실행 3배치: CTC 9.03, 정규화 항 887, λ ≈ 1.0e-3; 실제 λ는 4단계 시작 모델로 20배치에서 정함). MFA 로그가 Windows 콘솔에서 UTF-16으로 깨져 `PYTHONIOENCODING=utf-8`로 다시 실행
+- **사람이 정한 것**: 없음(개발 도구 설치는 사용자 상시 허용 범위)
+
 ## 2026-10-11 스트리밍 서비스 코드 (`src/stt_scratch/service/`, `web/index.html`, `scripts/stream_client.py`)
 - **만든 것**: Claude Code. 규칙 기반 끝점(blank ≥ 0.8 묵음, rule1 2.4 s / rule2 1.2 s / rule3 20 s), 세션(PCM → fbank → 캐시 스트리밍 → append-only greedy → 끝점), FastAPI WebSocket 서버(바이너리 int16 PCM 입력, partial/final JSON 출력, flush 뒤 청크당 계산 시간 통계), 브라우저 마이크 페이지, 실시간 클라이언트(6단계 지연 측정용)
 - **검증**: `tests/test_service.py` 8개(끝점 규칙 시점, 끝점 끈 세션의 최종 텍스트 == 배치 청크 마스크 greedy와 정확한 청크 수, 강제 끝점 뒤에도 모든 mel 프레임이 인코더에 들어가고 패킷마다 청크 1개가 나옴, CUDA에서 fp16 autocast로 도는지, WebSocket 왕복이 stats 메시지로 끝남, 끝점 뒤 세그먼트 전진). 6단계 측정표는 학습 뒤

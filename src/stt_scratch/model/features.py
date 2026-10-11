@@ -71,6 +71,23 @@ class StreamingFbank:
         return mel[0]
 
 
+def trim_tail(
+    mel: torch.Tensor, frames: torch.Tensor, max_trim: int, min_frames: torch.Tensor, rng
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """TrimTail (arXiv 2211.00522): drop U{0..max_trim} trailing mel frames per utterance, never below
+    min_frames (the CTC length condition). The dropped frames are overwritten with the padding value
+    log(LOG_EPS) so that no trimmed audio reaches the model through the convolutions."""
+    out = mel.clone()
+    new = frames.clone()
+    pad_value = float(torch.log(torch.tensor(LOG_EPS)))
+    for i in range(mel.shape[0]):
+        cut = min(rng.randint(0, max_trim), max(0, int(frames[i]) - int(min_frames[i])))
+        if cut > 0:
+            new[i] = frames[i] - cut
+            out[i, int(new[i]) :] = pad_value
+    return out, new
+
+
 def speed_perturb(wav: torch.Tensor, factor: float) -> torch.Tensor:
     """Tempo/pitch change by resampling (ESPnet/icefall practice): factor 0.9 makes the audio longer."""
     if factor == 1.0:

@@ -63,6 +63,18 @@ def cr_consistency(logits: torch.Tensor, out_lengths: torch.Tensor) -> torch.Ten
     return 0.5 * (kl12 + kl21) / b
 
 
+def peak_first_regularizer(logits: torch.Tensor, out_lengths: torch.Tensor) -> torch.Tensor:
+    """Peak-First CTC (arXiv 2211.03284): sum over valid t < T-1 of KL(sg(p_{t+1}) || p_t), i.e. every frame
+    is pulled towards the next frame's distribution, which moves the CTC peaks earlier. Summed over frames
+    and classes, mean over utterances (the same normalization as ctc_loss / B). Computed in fp32."""
+    lp = log_probs_fp32(logits)
+    nxt = lp[:, 1:].detach()
+    cur = lp[:, :-1]
+    t = torch.arange(lp.shape[1] - 1, device=lp.device)[None, :]
+    w = (t + 1 < out_lengths[:, None]).to(lp.dtype)[:, :, None]  # both t and t+1 are valid frames
+    return (nxt.exp() * (nxt - cur) * w).sum() / lp.shape[0]
+
+
 def total_loss(
     final_logits: torch.Tensor,
     inter_logits: list[torch.Tensor],

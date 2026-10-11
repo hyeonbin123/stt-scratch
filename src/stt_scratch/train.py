@@ -29,10 +29,10 @@ from stt_scratch.data import DurationBucketSampler, PcmStore, SpeechDataset, col
 from stt_scratch.evaluate import ctc_loss_manifest, evaluate_manifest
 from stt_scratch.model.config import ModelConfig
 from stt_scratch.model.conformer import ChunkConformerCTC
-from stt_scratch.model.ctc import cr_consistency, total_loss
-from stt_scratch.model.features import LogMel, speed_perturb
+from stt_scratch.model.ctc import cr_consistency, peak_first_regularizer, total_loss
+from stt_scratch.model.features import LogMel, speed_perturb, trim_tail
 from stt_scratch.model.mask import ChunkSpec, sample_chunk_spec
-from stt_scratch.text import Vocab
+from stt_scratch.text import Vocab, ctc_min_frames
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEEDS = (0.9, 1.0, 1.1)
@@ -71,6 +71,8 @@ RECIPE_KEYS = (
     "merge_kernel",
     "time_masks",
     "cr_ctc_alpha",
+    "trimtail_ms",
+    "peak_first_lambda",
 )
 
 
@@ -233,6 +235,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--cgmlp-kernel", type=int, default=31)
     p.add_argument("--merge-kernel", type=int, default=31)
     p.add_argument("--time-masks", type=int, default=5, help="SpecAugment time masks per utterance")
+    p.add_argument(
+        "--trimtail-ms", type=int, default=0, help="TrimTail: drop U{0..N} ms of trailing audio (0 = off)"
+    )
+    p.add_argument(
+        "--peak-first-lambda", type=float, default=0.0, help="Peak-First regularization weight (0 = off)"
+    )
     p.add_argument(
         "--cr-ctc-alpha",
         type=float,
@@ -442,6 +450,10 @@ def main(argv: list[str] | None = None) -> None:
             )
             for g in opt.param_groups:
                 g["lr"] = lr_at(step, schedule_steps, args.warmup, args.lr)
+            if args.trimtail_ms > 0:
+                # minimum mel frames that keep the CTC condition (out frames >= U + repeats + 1)
+                need = torch.tensor([4 * (ctc_min_frames(seq) + 1) for seq in batch["tokens"]], device=device)
+                mel, frames = trim_tail(mel, frames, args.trimtail_ms // 10, need, rng)
             if args.cr_ctc_alpha > 0:  # two views of the same batch; SpecAugment masks are drawn per row
                 mel, frames = torch.cat([mel, mel]), torch.cat([frames, frames])
                 targets, target_lengths = (
@@ -451,6 +463,11 @@ def main(argv: list[str] | None = None) -> None:
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
                 logits, inter, out_lengths = model(mel, frames, spec, augment=augment)
                 loss, parts = total_loss(logits, inter, out_lengths, targets, target_lengths, cfg.sc_weight)
+                if args.peak_first_lambda > 0:
+                    pfr = peak_first_regularizer(logits, out_lengths)
+                    loss = loss + args.peak_first_lambda * pfr
+                    parts["pfr"] = float(pfr.detach())
+                    parts["loss"] = float(loss.detach())
                 if args.cr_ctc_alpha > 0:
                     consistency = cr_consistency(logits, out_lengths)
                     loss = loss + args.cr_ctc_alpha * consistency

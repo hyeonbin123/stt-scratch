@@ -555,3 +555,40 @@ def test_cr_consistency_properties() -> None:
     changed = other.clone()
     changed[2, 9:] += 100.0  # beyond the valid length of utterance 2
     assert abs(float(cr_consistency(torch.cat([view, changed]), lengths)) - float(loss)) < 1e-3
+
+
+def test_peak_first_regularizer_properties() -> None:
+    """Stage 4: zero when consecutive frames agree, padding ignored, gradient only on the earlier frame."""
+    from stt_scratch.model.ctc import peak_first_regularizer
+
+    g = torch.Generator().manual_seed(8)
+    flat = torch.randn(2, 1, VOCAB, generator=g).expand(2, 12, VOCAB).contiguous()
+    assert abs(float(peak_first_regularizer(flat, torch.tensor([12, 7])))) < 1e-6
+    x = torch.randn(2, 12, VOCAB, generator=g).requires_grad_(True)
+    lengths = torch.tensor([12, 7])
+    loss = peak_first_regularizer(x, lengths)
+    assert float(loss.detach()) > 0
+    loss.backward()
+    assert float(x.grad[0, -1].abs().max()) == 0.0  # the last valid frame is only a (detached) target
+    assert float(x.grad[1, 6:].abs().max()) == 0.0  # frame 6 is the last valid frame, 7.. are padding
+    assert float(x.grad[0, :-1].abs().sum()) > 0
+
+
+def test_trim_tail_keeps_ctc_condition_and_pads() -> None:
+    import random
+
+    from stt_scratch.model.features import LOG_EPS, trim_tail
+
+    mel = torch.randn(3, 100, 80)
+    frames = torch.tensor([100, 90, 40])
+    need = torch.tensor([30, 85, 40])  # utterance 1 may lose at most 5 frames, utterance 2 none
+    rng = random.Random(3)
+    for _ in range(20):
+        out, new = trim_tail(mel, frames, 20, need, rng)
+        assert bool((new <= frames).all()) and bool((new >= need).all())
+        assert bool((frames - new <= 20).all())
+        for i in range(3):
+            n = int(new[i])
+            assert torch.equal(out[i, :n], mel[i, :n])
+            assert bool((out[i, n : int(frames[i])] == float(torch.log(torch.tensor(LOG_EPS)))).all())
+    assert int(new[2]) == 40
