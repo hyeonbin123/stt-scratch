@@ -130,7 +130,8 @@ def save_hyps(path: Path, utts, hyps: dict[str, str]) -> None:
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", required=True)
-    p.add_argument("--name", required=True, help="report file stem under reports/stage2/")
+    p.add_argument("--name", required=True, help="report file stem under --report-dir")
+    p.add_argument("--report-dir", default="reports/stage2")
     p.add_argument("--devs", default="dev_mix,dev_h")
     p.add_argument("--chunks", default="4,8,16,32")
     p.add_argument("--left", type=int, default=128)
@@ -164,7 +165,7 @@ def main(argv: list[str] | None = None) -> None:
             utts = utts[: args.limit]
         store = PcmStore(ROOT / "data" / "pcm", name)
         entry: dict = {"n": len(utts), "modes": {}}
-        hyp_dir = ROOT / "reports" / "stage2" / "hyps"
+        hyp_dir = ROOT / args.report_dir / "hyps"
         hyps = decode_offline(model, vocab, utts, store, ChunkSpec(0, -1), device, logmel, amp=amp)
         save_hyps(hyp_dir / f"{args.name}-{name}-full.jsonl", utts, hyps)
         full = score(utts, hyps)
@@ -202,7 +203,7 @@ def main(argv: list[str] | None = None) -> None:
         }
         report["stability"] = stability_stats(model, utts, store, device, logmel, amp)
     report["seconds"] = round(time.perf_counter() - t0, 1)
-    out_dir = ROOT / "reports" / "stage2"
+    out_dir = ROOT / args.report_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{args.name}.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8"

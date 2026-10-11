@@ -23,7 +23,7 @@ class StreamState:
     frames_seen: int = 0  # encoder frames (25 fps) processed so far
     sub_cache: tuple[torch.Tensor, torch.Tensor] | None = None
     attn_caches: list[torch.Tensor] = field(default_factory=list)
-    conv_caches: list[torch.Tensor] = field(default_factory=list)
+    conv_caches: list = field(default_factory=list)  # per block: a tensor or a tuple of tensors
 
 
 class StreamingEncoder:
@@ -53,7 +53,7 @@ class StreamingEncoder:
         if not state.attn_caches:
             d = cfg.d_model
             state.attn_caches = [x.new_zeros(1, 0, d) for _ in m.blocks]
-            state.conv_caches = [x.new_zeros(1, d, cfg.conv_kernel - 1) for _ in m.blocks]
+            state.conv_caches = [block.init_conv_cache(x) for block in m.blocks]
         for i, block in enumerate(m.blocks, start=1):
             x, kv, new_conv = block.forward_streaming(
                 x, state.attn_caches[i - 1], state.conv_caches[i - 1], positions, self.spec, offset

@@ -477,3 +477,81 @@ def test_unk_counts_as_an_error_in_cer_ws_too() -> None:
     assert score_ns(ref, hyp).edits == 1
     assert score_ws(ref, hyp).edits == 1
     assert score_ws(ref, ref).edits == 0
+
+
+EB = dict(block="ebranchformer", cgmlp_units=64, cgmlp_kernel=31, merge_kernel=31)
+
+
+@pytest.mark.parametrize("chunk", [4, 8, 16])
+@pytest.mark.parametrize("bacon", [True, False])
+def test_ebranchformer_no_future_leakage(chunk: int, bacon: bool) -> None:
+    """Stage 3 arm (b): the cgMLP and merge convolutions must stay inside the chunk too."""
+    model = make_model(bacon=bacon, **EB)
+    spec = ChunkSpec(chunk, 64)
+    t_mel = 4 * chunk * 6
+    mel = random_mel(t_mel, seed=51)
+    frames = torch.tensor([t_mel])
+    with torch.no_grad():
+        ref, _, _ = model(mel, frames, spec)
+        for c in range(1, 6):
+            noisy = mel.clone()
+            noisy[:, 4 * chunk * c :] = torch.randn_like(noisy[:, 4 * chunk * c :]) * 5
+            out, _, _ = model(noisy, frames, spec)
+            assert max_abs(out[:, : chunk * c], ref[:, : chunk * c]) <= 1e-5, (chunk, c)
+            assert max_abs(out[:, chunk * c :], ref[:, chunk * c :]) > 1e-3
+
+
+@pytest.mark.parametrize("bacon", [True, False])
+def test_ebranchformer_streaming_equals_offline(bacon: bool) -> None:
+    """Cache streaming == offline chunk mask, with the 64-frame cache truncated and a partial last chunk."""
+    model = make_model(bacon=bacon, **EB)
+    spec = ChunkSpec(8, 64)
+    n_full = 12
+    t_mel = 32 * n_full + 19
+    mel = random_mel(t_mel, seed=52)
+    with torch.no_grad():
+        offline = log_probs_fp32(model(mel, torch.tensor([t_mel]), spec)[0])[0]
+        enc = StreamingEncoder(model, spec)
+        state = enc.new_state()
+        parts = [enc.step(mel[0, i * 32 : (i + 1) * 32], state) for i in range(n_full)]
+        parts.append(enc.step(mel[0, n_full * 32 :], state))
+        streamed = torch.cat(parts, dim=0)
+    assert isinstance(state.conv_caches[0], tuple) and state.attn_caches[0].shape[1] == 64
+    assert streamed.shape == offline.shape
+    assert max_abs(streamed, offline) <= 1e-5
+
+
+def test_ebranchformer_padding_does_not_change_valid_frames() -> None:
+    model = make_model(**EB)
+    spec = ChunkSpec(8, 64)
+    a, b = random_mel(4 * 8 * 5, seed=53)[0], random_mel(4 * 8 * 3, seed=54)[0]
+    batch = torch.zeros(2, a.shape[0], 80)
+    batch[0] = a
+    batch[1, : b.shape[0]] = b
+    with torch.no_grad():
+        out, _, lengths = model(batch, torch.tensor([a.shape[0], b.shape[0]]), spec)
+        alone, _, _ = model(b[None], torch.tensor([b.shape[0]]), spec)
+    assert torch.isfinite(out).all()
+    assert max_abs(out[1, : int(lengths[1])], alone[0]) <= 1e-5
+
+
+def test_cr_consistency_properties() -> None:
+    """CR-CTC term: zero for identical views, positive otherwise, padded frames ignored, gradients reach
+    both views through the non-detached side."""
+    from stt_scratch.model.ctc import cr_consistency
+
+    g = torch.Generator().manual_seed(7)
+    view = torch.randn(3, 20, VOCAB, generator=g)
+    lengths = torch.tensor([20, 15, 9, 20, 15, 9])
+    same = cr_consistency(torch.cat([view, view]), lengths)
+    assert abs(float(same)) < 1e-6
+    other = torch.randn(3, 20, VOCAB, generator=g)
+    x = torch.cat([view, other]).requires_grad_(True)
+    loss = cr_consistency(x, lengths)
+    assert float(loss.detach()) > 0
+    loss.backward()
+    assert float(x.grad[:3].abs().sum()) > 0 and float(x.grad[3:].abs().sum()) > 0
+    assert float(x.grad[1, 15:].abs().max()) == 0.0 and float(x.grad[4, 15:].abs().max()) == 0.0
+    changed = other.clone()
+    changed[2, 9:] += 100.0  # beyond the valid length of utterance 2
+    assert abs(float(cr_consistency(torch.cat([view, changed]), lengths)) - float(loss)) < 1e-3

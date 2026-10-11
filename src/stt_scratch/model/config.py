@@ -30,6 +30,12 @@ class ModelConfig:
     # Convolution module: True = BACON split (half causal, half chunk-bounded bidirectional);
     # False = all channels causal.
     bacon: bool = True
+    # Encoder block: "conformer" (Run A) or "ebranchformer" (Stage 3 arm b; MHSA | cgMLP branches merged by a
+    # depthwise conv). cgMLP and merge convolutions use the same split chunk-bounded depthwise conv.
+    block: str = "conformer"
+    cgmlp_units: int = 1024
+    cgmlp_kernel: int = 31
+    merge_kernel: int = 31
     # Dynamic chunk training (U2): with prob. full_context_prob the batch sees full context,
     # otherwise a chunk size (frames at 25 fps) and a left-context size (frames) are drawn uniformly.
     full_context_prob: float = 0.5

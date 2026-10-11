@@ -29,7 +29,7 @@ from stt_scratch.data import DurationBucketSampler, PcmStore, SpeechDataset, col
 from stt_scratch.evaluate import ctc_loss_manifest, evaluate_manifest
 from stt_scratch.model.config import ModelConfig
 from stt_scratch.model.conformer import ChunkConformerCTC
-from stt_scratch.model.ctc import total_loss
+from stt_scratch.model.ctc import cr_consistency, total_loss
 from stt_scratch.model.features import LogMel, speed_perturb
 from stt_scratch.model.mask import ChunkSpec, sample_chunk_spec
 from stt_scratch.text import Vocab
@@ -65,6 +65,12 @@ RECIPE_KEYS = (
     "dev_loss_set",
     "fp32",
     "init",
+    "block",
+    "cgmlp_units",
+    "cgmlp_kernel",
+    "merge_kernel",
+    "time_masks",
+    "cr_ctc_alpha",
 )
 
 
@@ -87,6 +93,11 @@ def build_model(vocab: Vocab, args: argparse.Namespace) -> tuple[ChunkConformerC
         sc_feedback=not args.no_sc_feedback,
         bacon=not args.no_bacon,
         qk_norm=not args.no_qk_norm,
+        block=args.block,
+        cgmlp_units=args.cgmlp_units,
+        cgmlp_kernel=args.cgmlp_kernel,
+        merge_kernel=args.merge_kernel,
+        time_masks=args.time_masks,
         full_context_prob=0.0 if args.offline_only else 0.5,
         mel_mean=stats["mean"],
         mel_std=stats["std"],
@@ -215,6 +226,19 @@ def main(argv: list[str] | None = None) -> None:
     )
     p.add_argument("--no-bacon", action="store_true")
     p.add_argument("--no-qk-norm", action="store_true", help="drop the per-head LayerNorm on q and k")
+    p.add_argument("--block", default="conformer", choices=["conformer", "ebranchformer"])
+    p.add_argument(
+        "--cgmlp-units", type=int, default=1024, help="E-Branchformer cgMLP width (before the split)"
+    )
+    p.add_argument("--cgmlp-kernel", type=int, default=31)
+    p.add_argument("--merge-kernel", type=int, default=31)
+    p.add_argument("--time-masks", type=int, default=5, help="SpecAugment time masks per utterance")
+    p.add_argument(
+        "--cr-ctc-alpha",
+        type=float,
+        default=0.0,
+        help="CR-CTC consistency weight (0 = off); each batch is duplicated into two augmented views",
+    )
     p.add_argument(
         "--offline-only", action="store_true", help="control run: full context only, no chunk masks"
     )
@@ -331,7 +355,8 @@ def main(argv: list[str] | None = None) -> None:
         if saved is None:
             recipe_diff = {"recipe": ("missing in checkpoint", "cannot verify")}
         else:
-            recipe_diff = {k: (saved.get(k), recipe[k]) for k in RECIPE_KEYS if saved.get(k) != recipe[k]}
+            saved = {k: saved.get(k, p.get_default(k)) for k in RECIPE_KEYS}  # keys added later = defaults
+            recipe_diff = {k: (saved[k], recipe[k]) for k in RECIPE_KEYS if saved[k] != recipe[k]}
         if recipe_diff and not args.allow_recipe_change:
             raise SystemExit(
                 f"recipe differs from the checkpoint (pass --allow-recipe-change to override): {recipe_diff}"
@@ -417,9 +442,20 @@ def main(argv: list[str] | None = None) -> None:
             )
             for g in opt.param_groups:
                 g["lr"] = lr_at(step, schedule_steps, args.warmup, args.lr)
+            if args.cr_ctc_alpha > 0:  # two views of the same batch; SpecAugment masks are drawn per row
+                mel, frames = torch.cat([mel, mel]), torch.cat([frames, frames])
+                targets, target_lengths = (
+                    torch.cat([targets, targets]),
+                    torch.cat([target_lengths, target_lengths]),
+                )
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
                 logits, inter, out_lengths = model(mel, frames, spec, augment=augment)
                 loss, parts = total_loss(logits, inter, out_lengths, targets, target_lengths, cfg.sc_weight)
+                if args.cr_ctc_alpha > 0:
+                    consistency = cr_consistency(logits, out_lengths)
+                    loss = loss + args.cr_ctc_alpha * consistency
+                    parts["cr"] = float(consistency.detach())
+                    parts["loss"] = float(loss.detach())
             opt.zero_grad(set_to_none=True)
             if not torch.isfinite(loss):
                 counters["nan_count"] += 1

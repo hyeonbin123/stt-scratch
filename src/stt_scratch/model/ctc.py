@@ -48,6 +48,21 @@ def ctc_loss(
     )
 
 
+def cr_consistency(logits: torch.Tensor, out_lengths: torch.Tensor) -> torch.Tensor:
+    """CR-CTC consistency (arXiv 2410.05101): logits (2B, T, V) hold two augmented views, view 1 first.
+    0.5 * [KL(sg(p1) || p2) + KL(sg(p2) || p1)], summed over valid frames and classes, mean over utterances
+    (the same normalization as ctc_loss / B). Computed in fp32."""
+    lp = log_probs_fp32(logits)
+    b = lp.shape[0] // 2
+    lp1, lp2 = lp[:b], lp[b:]
+    valid = torch.arange(lp.shape[1], device=lp.device)[None, :] < out_lengths[:b, None]
+    w = valid[:, :, None].to(lp.dtype)
+    t1, t2 = lp1.detach(), lp2.detach()
+    kl12 = (t1.exp() * (t1 - lp2) * w).sum()
+    kl21 = (t2.exp() * (t2 - lp1) * w).sum()
+    return 0.5 * (kl12 + kl21) / b
+
+
 def total_loss(
     final_logits: torch.Tensor,
     inter_logits: list[torch.Tensor],

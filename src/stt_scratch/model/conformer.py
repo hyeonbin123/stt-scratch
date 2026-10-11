@@ -57,6 +57,10 @@ class ConformerBlock(nn.Module):
         x = x + 0.5 * self.ffn2(x)
         return self.final_norm(x)
 
+    def init_conv_cache(self, x: torch.Tensor) -> torch.Tensor:
+        """Zero conv-module cache for the first streaming chunk: (1, d, k-1)."""
+        return x.new_zeros(1, x.shape[-1], self.conv.cache_frames)
+
     def forward_streaming(
         self,
         x: torch.Tensor,
@@ -104,7 +108,15 @@ class ChunkConformerCTC(nn.Module):
             cfg.n_mels, cfg.subsampling_channels, cfg.d_model, cfg.causal_subsampling
         )
         self.in_dropout = nn.Dropout(cfg.dropout)
-        self.blocks = nn.ModuleList(ConformerBlock(cfg) for _ in range(cfg.n_layers))
+        if cfg.block == "conformer":
+            block_cls = ConformerBlock
+        elif cfg.block == "ebranchformer":
+            from stt_scratch.model.ebranchformer import EBranchformerBlock
+
+            block_cls = EBranchformerBlock
+        else:
+            raise ValueError(f"unknown block {cfg.block!r}")
+        self.blocks = nn.ModuleList(block_cls(cfg) for _ in range(cfg.n_layers))
         self.out_proj = nn.Linear(cfg.d_model, cfg.vocab_size)  # shared by the final and intermediate heads
         self.sc_layers = set(cfg.sc_layers)
         self.sc_proj = nn.Linear(cfg.vocab_size, cfg.d_model) if self.sc_layers and cfg.sc_feedback else None

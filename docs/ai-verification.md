@@ -62,6 +62,12 @@
 - **Run A 감시(검토 권고)**: 5 epoch 통과를 100 epoch 안정성으로 보지 않는다. epoch마다 dev 손실/CER·skipped 증가·scale·`low_scale_streak`를 보고, 등록된 재시작 조건(비유한 손실 3회, scale < 1.0 100 step, scratch 런 epoch 3 규칙)만 LR×0.5 재시작의 근거로 쓴다. 기울기 노름·QK affine 성장은 기록만 한다
 - **사람이 정한 것**: 없음
 
+## 2026-10-11 밤 3단계 후보 코드 (`src/stt_scratch/model/ebranchformer.py`, `ctc.cr_consistency`, `scripts/stage3.py`)
+- **만든 것**: Claude Code. 2단계 학습이 GPU를 쓰는 동안 CPU에서만 작성·시험. E-Branchformer 블록(MHSA | cgMLP 병렬, concat → depthwise conv → 더하기 → linear 병합, 두 conv 모두 Conformer와 같은 BACON 분할 conv와 패딩 0 처리, 스트리밍 캐시 2개), 블록 선택 옵션, 블록별 스트리밍 캐시 초기화(`init_conv_cache`), SpecAugment 시간 마스크 수 옵션, CR-CTC 일관성 손실(두 뷰를 배치 축으로 이어 1회 forward), 3단계 실행 스크립트(후보 순서·예산·(c) 과적합·메모리 조건·평가·짝지은 비교 자동화, `--dry-run`), 2단계 보고의 발화별 가설 저장과 학습셋 CER, 짝지은 비교 스크립트
+- **검증**: 기본값이 Run A 처방과 같음(기존 게이트 테스트 그대로 통과). 새 테스트 9개: E-Branchformer 미래 누출 없음(청크 4/8/16 × BACON 켬/끔), 캐시 스트리밍 == 오프라인(캐시 절단 + 부분 마지막 청크, BACON 켬/끔, fp32 1e-5), 패딩 불변, CR 일관성 성질(같은 뷰면 0, 패딩 프레임 무시, 두 뷰 모두로 기울기). 세 후보 각각 작은 모델로 CPU 2 step 학습 연기 시험, 실행 스크립트 dry-run으로 명령 확인. CPU 68개 통과(CUDA 전용 5개는 GPU가 학습 중이라 건너뜀)
+- **잡은 것**: 3단계 예산 추정이 체크포인트 첫·끝 시각 차이를 써서 일시 중지·부하 구간까지 포함하던 것을 epoch 간격 중앙값으로 바꿈. 같은 epoch에서 두 번 재개하면 재개 기록을 덮어쓰던 것을 번호 붙이기로 바꿈
+- **사람이 정한 것**: 없음(3단계 설정·예산은 규칙 변경 17로 측정 전 등록)
+
 ## 2026-10-11 스트리밍 서비스 코드 (`src/stt_scratch/service/`, `web/index.html`, `scripts/stream_client.py`)
 - **만든 것**: Claude Code. 규칙 기반 끝점(blank ≥ 0.8 묵음, rule1 2.4 s / rule2 1.2 s / rule3 20 s), 세션(PCM → fbank → 캐시 스트리밍 → append-only greedy → 끝점), FastAPI WebSocket 서버(바이너리 int16 PCM 입력, partial/final JSON 출력, flush 뒤 청크당 계산 시간 통계), 브라우저 마이크 페이지, 실시간 클라이언트(6단계 지연 측정용)
 - **검증**: `tests/test_service.py` 8개(끝점 규칙 시점, 끝점 끈 세션의 최종 텍스트 == 배치 청크 마스크 greedy와 정확한 청크 수, 강제 끝점 뒤에도 모든 mel 프레임이 인코더에 들어가고 패킷마다 청크 1개가 나옴, CUDA에서 fp16 autocast로 도는지, WebSocket 왕복이 stats 메시지로 끝남, 끝점 뒤 세그먼트 전진). 6단계 측정표는 학습 뒤
