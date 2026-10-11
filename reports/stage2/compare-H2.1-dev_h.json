@@ -1,0 +1,28 @@
+{
+ "a": "reports/stage2/hyps/runA-avg10-dev_h-full.jsonl",
+ "b": "reports/stage2/hyps/runB-lr1e-3-avg10-dev_h-full.jsonl",
+ "hangul_only": {
+  "n": 1113,
+  "rate_a": 0.17830751889116186,
+  "rate_b": 0.20373230910533127,
+  "ratio_a_over_b": 0.8752049180327869,
+  "diff_a_minus_b": -0.025424790214169407,
+  "diff_ci95": [
+   -0.02907217855723892,
+   -0.022047492019464744
+  ],
+  "ci_excludes_zero": true
+ },
+ "all": {
+  "n": 1113,
+  "rate_a": 0.17830751889116186,
+  "rate_b": 0.20373230910533127,
+  "ratio_a_over_b": 0.8752049180327869,
+  "diff_a_minus_b": -0.025424790214169407,
+  "diff_ci95": [
+   -0.02907217855723892,
+   -0.022047492019464744
+  ],
+  "ci_excludes_zero": true
+ }
+}
