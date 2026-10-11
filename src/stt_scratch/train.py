@@ -36,6 +36,35 @@ from stt_scratch.text import Vocab
 ROOT = Path(__file__).resolve().parents[2]
 SPEEDS = (0.9, 1.0, 1.1)
 COUNTERS = ("nan_count", "low_scale_streak", "skipped", "updates")
+# Arguments that define the training recipe. They are stored in every checkpoint and a --resume must match
+# them (docs/experiments.md rule change 15); pass --allow-recipe-change to override deliberately.
+RECIPE_KEYS = (
+    "train",
+    "lr",
+    "warmup",
+    "schedule_steps",
+    "epochs",
+    "max_duration",
+    "seed",
+    "d_model",
+    "n_layers",
+    "ffn_dim",
+    "sc_layers",
+    "sc_weight",
+    "no_sc_feedback",
+    "no_bacon",
+    "no_qk_norm",
+    "offline_only",
+    "no_perturb",
+    "no_augment",
+    "augment_start_epoch",
+    "augment_start_step",
+    "perturb_start_epoch",
+    "dev_loss_rule",
+    "dev_loss_set",
+    "fp32",
+    "init",
+)
 
 
 def git_commit() -> str:
@@ -118,9 +147,13 @@ def save_checkpoint(
     device,
     complete,
     divergence=None,
+    recipe=None,
+    dev_rule_active=True,
 ):
     torch.save(
         {
+            "recipe": recipe,
+            "dev_loss_rule_active": dev_rule_active,
             "model": model.state_dict(),
             "opt": opt.state_dict(),
             "scaler": scaler.state_dict(),
@@ -185,6 +218,18 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument(
         "--perturb-start-epoch", type=int, default=0, help="speed perturbation is off before this epoch"
     )
+    p.add_argument(
+        "--augment-start-step",
+        type=int,
+        default=0,
+        help="when > 0, SpecAugment starts at this optimizer step attempt instead of at "
+        "--augment-start-epoch (for arms whose batch rule differs: same step count)",
+    )
+    p.add_argument(
+        "--allow-recipe-change",
+        action="store_true",
+        help="resume even if the saved recipe differs from the current arguments (recorded in meta)",
+    )
     p.add_argument("--fp32", action="store_true")
     p.add_argument(
         "--eval-chunk", type=int, default=16, help="simulated chunk (frames) evaluated every epoch"
@@ -232,10 +277,19 @@ def main(argv: list[str] | None = None) -> None:
     divergence = None
 
     start_epoch, step = 0, 0
+    recipe = {k: getattr(args, k) for k in RECIPE_KEYS}
+    dev_rule_active = not args.init  # the from-scratch divergence rule does not apply to continuations
+    recipe_diff: dict = {}
+    if args.resume and args.init:
+        raise SystemExit("--resume restores the run's own weights; do not combine it with --init")
     if args.init:
         state = torch.load(args.init, map_location=device, weights_only=True)
         model.load_state_dict(state["model"])
-    if args.resume and (run / "last.pt").exists():
+    if args.resume:
+        if not (run / "last.pt").exists():
+            raise SystemExit(
+                f"--resume needs {run / 'last.pt'}; a run without a completed epoch cannot resume"
+            )
         state = torch.load(run / "last.pt", map_location=device, weights_only=True)
         if not state.get("epoch_complete", False):
             raise SystemExit(
@@ -245,12 +299,22 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(
                 f"this run diverged ({state['divergence']}); restart with LR x 0.5 under a new --run"
             )
+        saved = state.get("recipe")
+        if saved is None:
+            recipe_diff = {"recipe": ("missing in checkpoint", "cannot verify")}
+        else:
+            recipe_diff = {k: (saved.get(k), recipe[k]) for k in RECIPE_KEYS if saved.get(k) != recipe[k]}
+        if recipe_diff and not args.allow_recipe_change:
+            raise SystemExit(
+                f"recipe differs from the checkpoint (pass --allow-recipe-change to override): {recipe_diff}"
+            )
         model.load_state_dict(state["model"])
         opt.load_state_dict(state["opt"])
         scaler.load_state_dict(state["scaler"])
         start_epoch, step = state["epoch"] + 1, state["step"]
         counters.update(state.get("counters", {}))
         dev_loss_hist = list(state.get("dev_loss", []))
+        dev_rule_active = bool(state.get("dev_loss_rule_active", dev_rule_active))
         if "rng" in state:
             restore_rng(state["rng"], rng, device)
 
@@ -272,14 +336,24 @@ def main(argv: list[str] | None = None) -> None:
         "bf16_native": bf16_native,
         "amp_fp16": use_amp,
     }
-    (run / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    meta["augment_start_step_effective"] = (
+        args.augment_start_step or args.augment_start_epoch * steps_per_epoch
+    )
+    meta["dev_loss_rule_active"] = dev_rule_active
+    if args.resume:
+        meta["resumed_from_epoch"] = start_epoch - 1
+        meta["recipe_diff"] = {k: list(v) for k, v in recipe_diff.items()}
+        meta_path = run / f"meta-resume-{start_epoch:03d}.json"  # the original meta.json is kept
+    else:
+        meta_path = run / "meta.json"
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     log = open(run / "train.jsonl", "a", encoding="utf-8")
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
         sampler.set_epoch(epoch)
-        augment = not args.no_augment and epoch >= args.augment_start_epoch
         perturb = not args.no_perturb and epoch >= args.perturb_start_epoch
+        augment = False
         t_epoch = time.perf_counter()
         wait, compute = 0.0, 0.0
         t_wait = time.perf_counter()
@@ -287,6 +361,10 @@ def main(argv: list[str] | None = None) -> None:
             wait += time.perf_counter() - t_wait
             t_step = time.perf_counter()
             mel, frames, targets, target_lengths = prepare_batch(batch, logmel, device, rng, perturb)
+            if args.augment_start_step > 0:
+                augment = not args.no_augment and step >= args.augment_start_step
+            else:
+                augment = not args.no_augment and epoch >= args.augment_start_epoch
             spec = (
                 ChunkSpec(0, -1)
                 if args.offline_only
@@ -372,6 +450,8 @@ def main(argv: list[str] | None = None) -> None:
                 device,
                 False,
                 divergence,
+                recipe,
+                dev_rule_active,
             )
             break
         model.eval()
@@ -388,10 +468,11 @@ def main(argv: list[str] | None = None) -> None:
         dev_loss = ctc_loss_manifest(model, vocab, args.dev_loss_set, device, logmel=logmel, amp=use_amp)
         dev_loss_hist.append(dev_loss)
         not_decreasing = len(dev_loss_hist) >= rule_b and not (
-            dev_loss_hist[rule_b - 1]
-            < dev_loss_hist[rule_a - 1]  # a non-finite loss counts as not decreasing
+            math.isfinite(dev_loss_hist[rule_a - 1])
+            and math.isfinite(dev_loss_hist[rule_b - 1])
+            and dev_loss_hist[rule_b - 1] < dev_loss_hist[rule_a - 1]  # non-finite = not decreasing
         )
-        if not args.init and epoch == rule_b - 1 and not_decreasing:
+        if dev_rule_active and epoch == rule_b - 1 and not_decreasing:
             divergence = {
                 "reason": "dev_loss_not_decreasing",
                 "epoch": epoch,
@@ -419,6 +500,8 @@ def main(argv: list[str] | None = None) -> None:
                 device,
                 True,
                 divergence,
+                recipe,
+                dev_rule_active,
             )
         if divergence:
             break

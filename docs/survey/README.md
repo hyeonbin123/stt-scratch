@@ -157,7 +157,7 @@
 | 인코더 | Conformer 12층 d=256, 4헤드, FFN 1024, pre-LN, conv 모듈은 LayerNorm·GLU·SiLU, depthwise k=15, 약 21M | 65 h에 20~40M이 적정(01 §3.3), 순수 PyTorch로 가장 적은 비표준 부품, 스트리밍화할 시간축 연산이 블록당 2개뿐. Zipformer의 우위는 960 h·transducer 조건이고(C1) 재구현 위험이 크다. E-Branchformer와의 차이는 시드 분산 수준(C3)이라 3단계 통제군으로만 둔다 |
 | conv 모듈 | BACON식 반반(128채널 완전 인과 + 128채널 청크 경계까지 양방향), 설정 플래그로 전 채널 인과로 폴백 | 960 h·110M 근거(Interspeech 2026)라 65 h 이득은 미검증. 폴백이 한 줄이라 위험이 작다 |
 | 서브샘플링 | 인과 Conv2d 2단, 4배(25 fps), look-ahead 0 | 한국어 음절+공백 토큰률 p95 6.1자/s(실측)에서 8배(12.5 fps)는 CTC 길이 제약에 걸린다 |
-| 위치 | RoPE + `scaled_dot_product_attention`(bool 마스크) + **QK-norm**(2026-10-11 1단계 진단 뒤 추가: q·k 헤드별 LayerNorm, RoPE 앞) | 순수 CTC에서 RelPos와 동급(2501.06051), rel-shift 커스텀 코드가 없어 캐시 추론 등가성 테스트가 쉽다. QK-norm은 LR 7e-4 이상에서 어텐션 로짓 표준편차가 60~111까지 폭주하는 것을 1~3으로 묶었다(`docs/experiments.md` 규칙 변경 13) |
+| 위치 | RoPE + `scaled_dot_product_attention`(bool 마스크) + **QK-norm**(2026-10-11 1단계 진단 뒤 추가: q·k 헤드별 LayerNorm, RoPE 앞) | 순수 CTC에서 RelPos와 동급(2501.06051), rel-shift 커스텀 코드가 없어 캐시 추론 등가성 테스트가 쉽다. QK-norm은 LR 7e-4 이상에서 어텐션 로짓 표준편차가 60~111까지 커지던 것을 1~3으로 억제했다(`docs/experiments.md` 규칙 변경 13; LayerNorm의 affine 파라미터가 커지면 경계가 보장되지 않으므로 2단계 보고에서 감시) |
 | 정규화 커리큘럼 | SpecAugment는 epoch 3부터(앞 3 epoch는 속도 교란·동적 청크·dropout만) | 처음부터 SpecAugment를 걸면 CTC 정렬이 5 epoch 넘게 시작되지 않았고, 끄면 epoch 2에 시작했다(1단계 진단, 규칙 변경 13) |
 | 스트리밍 학습 | U2식 청크 경계 마스크 + 배치 단위 동적 청크: 50 % 전체 문맥, 50 % 청크∈{4,8,16,32}프레임(160/320/640/1,280 ms) 균등, 좌측 문맥∈{64,128,무제한}. 우측 문맥 혼합 학습은 넣지 않음 | C13(배치 단위 샘플링만 작동), C12(RC 혼합 학습은 RC0 디코딩 퇴보). 3안의 {8,16,32}에 4를 더한 것은 02 §4.5의 160 ms 평가 축을 채우기 위해서(심사 지적) |
 | 손실 | 최종 CTC + 자기조건 CTC(3·6·9층, λ=0.5), 입력은 fp32 log_softmax. CR-CTC·transducer·AED는 쓰지 않음 | C4(81 h에서 거의 무비용 개선), C9·C11(fp32 입력 필수, k2 불가). InterCTC 단독과의 비교는 3단계 (a) |

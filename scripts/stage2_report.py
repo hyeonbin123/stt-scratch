@@ -82,6 +82,41 @@ def streaming_check(model, utts, store, device, logmel, spec: ChunkSpec, amp: bo
     }
 
 
+@torch.no_grad()
+def stability_stats(model, utts, store, device, logmel, amp: bool) -> dict:
+    """QK-norm affine magnitudes and per-block attention-logit std on one dev batch (rule change 13 note:
+    the LayerNorm bounds the logits only while its affine parameters stay near 1/0)."""
+    blocks = model.blocks
+    gains = [float(b.attn.q_norm.weight.abs().max()) for b in blocks if b.attn.q_norm is not None]
+    kgains = [float(b.attn.k_norm.weight.abs().max()) for b in blocks if b.attn.k_norm is not None]
+    batch = list(range(min(8, len(utts))))
+    mel, frames = batch_features(utts, batch, store, device, logmel)
+    stds = []
+    with autocast(device, amp):
+        x = model.normalize_mel(mel)
+        x, lengths = model.subsampling(x, frames)
+        t = x.shape[1]
+        mask = torch.ones(x.shape[0], 1, t, t, dtype=torch.bool, device=device)
+        pos = torch.arange(t, device=device)
+        valid = pos[None, :] < lengths[:, None]
+        for blk in blocks:
+            h = blk.attn_norm(x + 0.5 * blk.ffn1(x))
+            d = h.shape[-1]
+            qkv = blk.attn.qkv(h)
+            hd = blk.attn.head_dim
+            q = qkv[..., :d].view(h.shape[0], t, -1, hd).transpose(1, 2)
+            k = qkv[..., d : 2 * d].view(h.shape[0], t, -1, hd).transpose(1, 2)
+            if blk.attn.q_norm is not None:
+                q, k = blk.attn.q_norm(q), blk.attn.k_norm(k)
+            stds.append(float(((q.float() @ k.float().transpose(-1, -2)) / hd**0.5).std()))
+            x = blk(x, mask, pos, 0, valid)
+    return {
+        "qk_norm_max_gain_q": gains,
+        "qk_norm_max_gain_k": kgains,
+        "attention_logit_std_per_block": stds,
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", required=True)
@@ -133,6 +168,7 @@ def main(argv: list[str] | None = None) -> None:
             "spec": "chunk8 left128",
             **streaming_check(model, utts, store, device, logmel, ChunkSpec(8, args.left), amp),
         }
+        report["stability"] = stability_stats(model, utts, store, device, logmel, amp)
     report["seconds"] = round(time.perf_counter() - t0, 1)
     out_dir = ROOT / "reports" / "stage2"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -166,6 +202,14 @@ def main(argv: list[str] | None = None) -> None:
             f"fp16 streaming check ({c['spec']}, {c['n_utterances']} dev_h utts, {c['frames']} frames): "
             f"max |dlog p| {c['max_abs_dlogprob']:.2e}, max |dp| {c['max_abs_dprob']:.2e}, "
             f"argmax agreement {c['argmax_agreement'] * 100:.3f} %",
+        ]
+    if "stability" in report:
+        s = report["stability"]
+        lines += [
+            "",
+            "stability: attention logit std per block "
+            f"{[round(v, 1) for v in s['attention_logit_std_per_block']]}, "
+            f"QK-norm max |gain| q {[round(v, 2) for v in s['qk_norm_max_gain_q']]}",
         ]
     (out_dir / f"{args.name}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))

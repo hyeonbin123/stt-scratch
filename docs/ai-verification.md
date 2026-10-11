@@ -54,6 +54,14 @@
 - **잡은 것**: ① 규칙 변경 3의 "epoch 3 vs epoch 1" 비교가 warmup 구간과 겹쳐 정체와 미학습을 구분하지 못함 ② 1단계 cosine 스케줄 길이를 5 epoch로 잡아 peak LR 유지 구간이 없었음(`--schedule-steps`로 2단계 스케줄을 잘라 쓰게 고침) ③ LR 7e-4 이상에서 어텐션 로짓 표준편차 2 → 13~27 → 60~111 폭주, 기울기 노름 37k(QK-norm으로 1~3에 묶임) ④ **진짜 원인은 처음부터 건 SpecAugment**: 끄면 epoch 2에 dev 손실 96·CER 0.57로 정렬이 시작되고, 속도 교란·동적 청크는 무관(P5). 처방은 규칙 변경 13(QK-norm 기본, SpecAugment epoch 3부터, 2단계 스케줄 절단) ⑤ 운영: GPU 작업 두 개를 동시에 띄우면 WDDM 페이징으로 둘 다 멈춤 → 한 번에 하나만. 감시 파이프라인 끝의 `cut`이 블록 버퍼링으로 이벤트를 삼킴
 - **사람이 정한 것**: 없음(2차 시도 6런은 "처방 전"으로 기록만 하고 H1에 넣지 않음)
 
+## 2026-10-11 Codex 1단계 독립 검토 반영 (`work/relay/2026-10-11-1014-stage1-review-codex.md`)
+- **방식**: 1단계 판정 직후, 2단계 Run A가 시작된 상태에서 experiments.md·진단 기록·train.py·sweep·attention·ctc·evaluate 전문을 stdin으로 넣어 정적 검토(263 s). 결과: 3차 결과를 무효화하거나 Run A를 멈출 P1 없음, P2 11건, P3 1건
+- **일치 확인**: 2e-3 선택과 s의 대상 선택이 등록대로, 6런 모두 dev 손실 규칙 통과, dev 손실 계산 조건(eval·full·최종 헤드·학습과 같은 autocast), CTC fp32 경로, QK-norm이 캐시 키에도 동일 적용·미래 정보 없음, `updates + skipped = 3485`, 1·2차 시도 제외의 타당성
+- **반영(코드, Run A 처방 불변)**: ① 체크포인트에 처방 인자와 dev 손실 규칙 적용 여부 저장, `--resume`가 처방 불일치면 거부(`--allow-recipe-change`로 명시 override, `meta-resume-*.json`에 기록, 원래 `meta.json` 보존) ② `last.pt` 없는 `--resume` 거부, `--resume`+`--init` 거부 ③ dev 손실 비교는 두 값 모두 유한할 때만 "내려감" ④ sweep: 후보 정의 인자의 `--train-args` 중복 거부, 런별 `meta.json` 대조(`recipe_ok`), 3시드·5 epoch 완료·발산 0만 `adoptable`, 표본표준편차 병기 ⑤ `--augment-start-step`(배치 규칙이 다른 arm용) ⑥ 2단계 보고에 QK-norm affine 크기·블록별 로짓 표준편차 기록
+- **반영(문서)**: 규칙 변경 13의 시각을 커밋 시각(07:02, 3차 시작 07:23 전)으로 바로잡고 규칙 변경 머리말에 1~12/13/15~16의 작성 시점을 구분; s의 pstdev가 측정 전 커밋(3dc3a1b)의 정의임을 명시하고 표본표준편차(2.28 임계)는 병기만; 진단의 인과 문구를 관측 범위로 축소(SpecAugment 끄기가 "충분"했고 속도 교란·동적 청크는 "방해가 아니었다", 자기조건 피드백·저 LR 대안은 "시험하지 않음", 로짓 성장은 "함께 관측된 불안정"); "전체가 warmup" → 2,000/2,091 step; P6b가 가중치만 이어받았음을 명시; 파일럿 B vs 3차 시드 1의 직접 비교 추가; 규칙 변경 15(재개·sweep 보호, 커리큘럼 step 2,091 정의, 로그 표본 표기)·16(4단계 이어 학습 처방: SpecAugment 처음부터, warmup 500, 15 epoch cosine, LR 1e-3, dev 손실 규칙 미적용)
+- **Run A 감시(검토 권고)**: 5 epoch 통과를 100 epoch 안정성으로 보지 않는다. epoch마다 dev 손실/CER·skipped 증가·scale·`low_scale_streak`를 보고, 등록된 재시작 조건(비유한 손실 3회, scale < 1.0 100 step, scratch 런 epoch 3 규칙)만 LR×0.5 재시작의 근거로 쓴다. 기울기 노름·QK affine 성장은 기록만 한다
+- **사람이 정한 것**: 없음
+
 ## 2026-10-11 스트리밍 서비스 코드 (`src/stt_scratch/service/`, `web/index.html`, `scripts/stream_client.py`)
 - **만든 것**: Claude Code. 규칙 기반 끝점(blank ≥ 0.8 묵음, rule1 2.4 s / rule2 1.2 s / rule3 20 s), 세션(PCM → fbank → 캐시 스트리밍 → append-only greedy → 끝점), FastAPI WebSocket 서버(바이너리 int16 PCM 입력, partial/final JSON 출력, flush 뒤 청크당 계산 시간 통계), 브라우저 마이크 페이지, 실시간 클라이언트(6단계 지연 측정용)
 - **검증**: `tests/test_service.py` 8개(끝점 규칙 시점, 끝점 끈 세션의 최종 텍스트 == 배치 청크 마스크 greedy와 정확한 청크 수, 강제 끝점 뒤에도 모든 mel 프레임이 인코더에 들어가고 패킷마다 청크 1개가 나옴, CUDA에서 fp16 autocast로 도는지, WebSocket 왕복이 stats 메시지로 끝남, 끝점 뒤 세그먼트 전진). 6단계 측정표는 학습 뒤
