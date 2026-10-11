@@ -114,6 +114,7 @@ def percentiles(xs: list[float]) -> dict:
 def measure(model, vocab, name, utts, store, refs, chunk, left, device, logmel, amp) -> dict:
     spec = ChunkSpec(chunk, left)
     hyps, ftd, ltd, mad = {}, [], [], []
+    ftd_by_utt, ltd_by_utt = {}, {}
     counts = {"utterances": len(utts), "with_alignment": 0, "first_matched": 0, "last_matched": 0}
     for batch in duration_batches(utts, 400.0):
         mel, frames = batch_features(utts, batch, store, device, logmel)
@@ -151,9 +152,11 @@ def measure(model, vocab, name, utts, store, refs, chunk, left, device, logmel, 
             if 0 in delays:
                 counts["first_matched"] += 1
                 ftd.append(delays[0])
+                ftd_by_utt[u.id] = delays[0] * 1000
             if len(ref_words) - 1 in delays:
                 counts["last_matched"] += 1
                 ltd.append(delays[len(ref_words) - 1])
+                ltd_by_utt[u.id] = delays[len(ref_words) - 1] * 1000
             if delays:
                 mad.append(float(np.mean(list(delays.values()))))
     scored = score(utts, hyps)
@@ -168,6 +171,8 @@ def measure(model, vocab, name, utts, store, refs, chunk, left, device, logmel, 
         "ltd_ms": percentiles(ltd),
         "mad_ms": percentiles(mad),
         "counts": counts,
+        "ftd_by_utt_ms": ftd_by_utt,
+        "ltd_by_utt_ms": ltd_by_utt,
     }
 
 

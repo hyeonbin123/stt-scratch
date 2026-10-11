@@ -68,6 +68,14 @@
 - **잡은 것**: 3단계 예산 추정이 체크포인트 첫·끝 시각 차이를 써서 일시 중지·부하 구간까지 포함하던 것을 epoch 간격 중앙값으로 바꿈. 같은 epoch에서 두 번 재개하면 재개 기록을 덮어쓰던 것을 번호 붙이기로 바꿈
 - **사람이 정한 것**: 없음(3단계 설정·예산은 규칙 변경 17로 측정 전 등록)
 
+## 2026-10-12 Codex 2단계 독립 검토 반영 (`work/relay/2026-10-12-0830-stage2-review-codex.md`)
+- **방식**: 2단계 판정 직후, 3단계 시작 전에 experiments.md·2단계 보고서·짝지은 비교·3/4단계 코드 전문을 stdin으로 넣어 정적 검토(288 s). P1 2, P2 11, P3 4
+- **일치 확인**: 2단계 수치·H2.1/H2.2/H2.3·서비스 청크 판정이 보고서와 맞음, Run B 재시작 흐름, 재개 경로, CR-CTC 뷰·정규화, InterCTC 단독 옵션, E-Branchformer 연결, 4단계 처방·지연 정의
+- **반영(P1)**: ① 3단계 실행기가 epoch 로그 줄 수로 완료를 판단하던 것을 체크포인트 기준으로(`train.completed_epochs`), 재개 때 체크포인트 뒤 epoch 기록을 따로 옮김 ② 기존 런을 다시 쓰기 전 `meta.json` 처방을 등록 처방과 대조(`train.expected_recipe`, `build_parser`)
+- **반영(P2)**: 평가 단계 실패 확인, 실제 사용 시간 기반 예산과 우선순위 끝부터 빼기, (c) 조건은 비율이 있을 때만, 3단계 발산 재시작(LR×0.5 최대 2회), 이미 학습 중인 런은 기다림, 4단계 재개(`--init`+`--resume` 허용, init은 처방으로 대조), 4단계 시작 모델 구조·손실 옵션을 3단계 정의에서 가져오고 결과 파일에 시작 체크포인트 SHA-256, H4 최종 채택 규칙(320 ms dev_mix)과 공통 발화 FTD 보조 보고, H2.1·H2.3·안정성 통계·fp16 귀인 문구를 관측 범위로 축소, H2.2 짝지은 구간 추가, dev_H 경계를 공통 규칙("넘게")에 맞춤, 학습셋 표본 방식 기록. 규칙 변경 19·20
+- **추가 확인(지적 13)**: GPU fp32로 같은 200발화를 재서 argmax 100 % 일치, fp16 불일치 4프레임은 모두 상위 두 후보 차 ≤ 0.0078의 동점임을 확인(`work/diag/stage2_streaming_fp32_gpu.json`)
+- **사람이 정한 것**: 없음
+
 ## 2026-10-12 새벽 4단계 준비 (TrimTail, Peak-First, MFA 기준 정렬, 지연 측정)
 - **만든 것**: Claude Code. 2단계 Run B가 GPU를 쓰는 동안 CPU로 작성. 학습 옵션 `--trimtail-ms`(발화 끝 0~N ms 절단, CTC 길이 조건 유지, 잘린 구간 패딩 값)와 `--peak-first-lambda`(KL(sg(p_{t+1})‖p_t)), Peak-First λ 보정 스크립트, MFA 입력 내보내기, 지연 측정 스크립트(`scripts/stage4_latency.py`: 청크 끝 도착 시각 기준 방출 시각, MFA 형태소를 어절로 다시 묶기, 편집 거리 어절 맞춤, FTD/LTD/MAD P50/P90). 측정 정의는 규칙 변경 18
 - **도구 설치**: Miniforge 26.7.2(conda-forge 공식 릴리스, GitHub 릴리스 메타데이터의 SHA-256과 대조)를 `D:\dev-tools\miniforge3`에, MFA 3.4.3 환경을 `D:\dev-tools\envs\mfa`에(패키지 캐시 `D:\dev-cache\conda-pkgs`, 모델 `D:\dev-cache\mfa`). PATH·레지스트리는 건드리지 않음. 한국어 토큰화에 `python-mecab-ko`가 필요해 MFA 환경에만 설치

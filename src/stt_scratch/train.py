@@ -194,7 +194,8 @@ def save_checkpoint(
     )
 
 
-def main(argv: list[str] | None = None) -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """All training options; the runners use it to compute the expected recipe of an arm."""
     p = argparse.ArgumentParser()
     p.add_argument("--run", required=True)
     p.add_argument("--train", default="train")
@@ -288,6 +289,29 @@ def main(argv: list[str] | None = None) -> None:
         help="cap PyTorch's GPU memory pool at this fraction of the card (0 = no cap). The caching allocator "
         "otherwise keeps fragmented blocks (9.4 GB reserved for 4.7 GB used) and Windows pages the excess",
     )
+    return p
+
+
+def expected_recipe(argv: list[str]) -> dict:
+    """Recipe (RECIPE_KEYS) that `train.py argv` would record."""
+    args = build_parser().parse_args(argv)
+    return {k: getattr(args, k) for k in RECIPE_KEYS}
+
+
+def completed_epochs(run: Path) -> int:
+    """Epochs completed according to the run's last.pt (0 if none, or if the checkpoint is mid-epoch
+    or diverged); the epoch log can be ahead of the checkpoint when a run stops between the two writes."""
+    path = run / "last.pt"
+    if not path.exists():
+        return 0
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    if not state.get("epoch_complete", False) or state.get("divergence"):
+        return 0
+    return int(state["epoch"]) + 1
+
+
+def main(argv: list[str] | None = None) -> None:
+    p = build_parser()
     args = p.parse_args(argv)
 
     run = ROOT / args.run
@@ -333,9 +357,7 @@ def main(argv: list[str] | None = None) -> None:
     recipe = {k: getattr(args, k) for k in RECIPE_KEYS}
     dev_rule_active = not args.init  # the from-scratch divergence rule does not apply to continuations
     recipe_diff: dict = {}
-    if args.resume and args.init:
-        raise SystemExit("--resume restores the run's own weights; do not combine it with --init")
-    if args.init:
+    if args.init and not args.resume:  # on --resume the weights come from last.pt; init is checked as recipe
         state = torch.load(args.init, map_location=device, weights_only=True)
         model.load_state_dict(state["model"])
     if args.resume:
@@ -392,6 +414,17 @@ def main(argv: list[str] | None = None) -> None:
                     "\n".join(dropped) + "\n", encoding="utf-8"
                 )
                 log_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        # an epoch summary written after last.pt (stop between the two writes) must not count as done
+        ep_path = run / "epochs.jsonl"
+        if ep_path.exists():
+            rows = [x for x in ep_path.read_text(encoding="utf-8").splitlines() if x]
+            later = [x for x in rows if json.loads(x).get("epoch", -1) >= start_epoch]
+            if later:
+                unique_path(run / f"epochs-discarded-before-resume-{start_epoch:03d}.jsonl").write_text(
+                    "\n".join(later) + "\n", encoding="utf-8"
+                )
+                kept_rows = [x for x in rows if json.loads(x).get("epoch", -1) < start_epoch]
+                ep_path.write_text("\n".join(kept_rows) + ("\n" if kept_rows else ""), encoding="utf-8")
 
     meta = {
         "args": vars(args),
