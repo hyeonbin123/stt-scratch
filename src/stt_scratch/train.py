@@ -238,6 +238,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--resume", action="store_true")
     p.add_argument("--init", default="", help="checkpoint to start from (Stage 4 continuation)")
     p.add_argument("--log-every", type=int, default=100)
+    p.add_argument(
+        "--cuda-memory-fraction",
+        type=float,
+        default=0.0,
+        help="cap PyTorch's GPU memory pool at this fraction of the card (0 = no cap). The caching allocator "
+        "otherwise keeps fragmented blocks (9.4 GB reserved for 4.7 GB used) and Windows pages the excess",
+    )
     args = p.parse_args(argv)
 
     run = ROOT / args.run
@@ -247,6 +254,9 @@ def main(argv: list[str] | None = None) -> None:
             f"{run} already holds a run; pass --resume or use a new --run (logs are never mixed)"
         )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda" and args.cuda_memory_fraction > 0:
+        # not part of the recipe: it only makes the allocator release cached blocks earlier
+        torch.cuda.set_per_process_memory_fraction(args.cuda_memory_fraction, torch.cuda.current_device())
     torch.manual_seed(args.seed)
     torch.backends.cudnn.benchmark = (
         False  # shapes change every batch; autotuning per shape dominated step time
@@ -300,6 +310,13 @@ def main(argv: list[str] | None = None) -> None:
                 f"this run diverged ({state['divergence']}); restart with LR x 0.5 under a new --run"
             )
         saved = state.get("recipe")
+        recipe_source = "checkpoint"
+        if saved is None and (run / "meta.json").exists():
+            # checkpoints written before the recipe guard: compare with the run's original meta.json; options
+            # that did not exist yet count as their defaults
+            meta_args = json.loads((run / "meta.json").read_text(encoding="utf-8"))["args"]
+            saved = {k: meta_args.get(k, p.get_default(k)) for k in RECIPE_KEYS}
+            recipe_source = "meta.json"
         if saved is None:
             recipe_diff = {"recipe": ("missing in checkpoint", "cannot verify")}
         else:
@@ -317,6 +334,20 @@ def main(argv: list[str] | None = None) -> None:
         dev_rule_active = bool(state.get("dev_loss_rule_active", dev_rule_active))
         if "rng" in state:
             restore_rng(state["rng"], rng, device)
+        # step records of the interrupted epoch would otherwise appear twice in train.jsonl
+        log_path = run / "train.jsonl"
+        if log_path.exists():
+            kept, dropped = [], []
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                if line and json.loads(line).get("step", -1) >= step:
+                    dropped.append(line)
+                elif line:
+                    kept.append(line)
+            if dropped:
+                (run / f"train-discarded-before-resume-{start_epoch:03d}.jsonl").write_text(
+                    "\n".join(dropped) + "\n", encoding="utf-8"
+                )
+                log_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
 
     meta = {
         "args": vars(args),
@@ -335,6 +366,7 @@ def main(argv: list[str] | None = None) -> None:
         "gpu": torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
         "bf16_native": bf16_native,
         "amp_fp16": use_amp,
+        "cuda_memory_fraction": args.cuda_memory_fraction,
     }
     meta["augment_start_step_effective"] = (
         args.augment_start_step or args.augment_start_epoch * steps_per_epoch
@@ -343,6 +375,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.resume:
         meta["resumed_from_epoch"] = start_epoch - 1
         meta["recipe_diff"] = {k: list(v) for k, v in recipe_diff.items()}
+        meta["recipe_source"] = recipe_source
         meta_path = run / f"meta-resume-{start_epoch:03d}.json"  # the original meta.json is kept
     else:
         meta_path = run / "meta.json"
@@ -466,6 +499,8 @@ def main(argv: list[str] | None = None) -> None:
                 )["cer_ns"],
             }
         dev_loss = ctc_loss_manifest(model, vocab, args.dev_loss_set, device, logmel=logmel, amp=use_amp)
+        if device.type == "cuda":
+            torch.cuda.empty_cache()  # evaluation batches have other shapes; drop their cached blocks
         dev_loss_hist.append(dev_loss)
         not_decreasing = len(dev_loss_hist) >= rule_b and not (
             math.isfinite(dev_loss_hist[rule_a - 1])
