@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import subprocess
 import sys
@@ -131,6 +132,16 @@ def restore_rng(states: dict, rng: random.Random, device: torch.device) -> None:
     torch.set_rng_state(states["torch_cpu"].cpu())  # map_location may have moved the state tensors
     if device.type == "cuda" and "torch_cuda" in states:
         torch.cuda.set_rng_state(states["torch_cuda"].cpu(), device)
+
+
+def unique_path(path: Path) -> Path:
+    """path, or path with -2, -3, ... before the suffix when it already exists (never overwrite records)."""
+    n = 2
+    candidate = path
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem}-{n}{path.suffix}")
+        n += 1
+    return candidate
 
 
 def save_checkpoint(
@@ -344,7 +355,7 @@ def main(argv: list[str] | None = None) -> None:
                 elif line:
                     kept.append(line)
             if dropped:
-                (run / f"train-discarded-before-resume-{start_epoch:03d}.jsonl").write_text(
+                unique_path(run / f"train-discarded-before-resume-{start_epoch:03d}.jsonl").write_text(
                     "\n".join(dropped) + "\n", encoding="utf-8"
                 )
                 log_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
@@ -367,6 +378,7 @@ def main(argv: list[str] | None = None) -> None:
         "bf16_native": bf16_native,
         "amp_fp16": use_amp,
         "cuda_memory_fraction": args.cuda_memory_fraction,
+        "alloc_conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""),
     }
     meta["augment_start_step_effective"] = (
         args.augment_start_step or args.augment_start_epoch * steps_per_epoch
@@ -376,7 +388,7 @@ def main(argv: list[str] | None = None) -> None:
         meta["resumed_from_epoch"] = start_epoch - 1
         meta["recipe_diff"] = {k: list(v) for k, v in recipe_diff.items()}
         meta["recipe_source"] = recipe_source
-        meta_path = run / f"meta-resume-{start_epoch:03d}.json"  # the original meta.json is kept
+        meta_path = unique_path(run / f"meta-resume-{start_epoch:03d}.json")  # meta.json is kept
     else:
         meta_path = run / "meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -444,6 +456,11 @@ def main(argv: list[str] | None = None) -> None:
                     "left": spec.left_context,
                     "batch": len(batch["ids"]),
                     "mem_gb": torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else None,
+                    # allocator health: reserved pool and how often it had to free cached blocks and retry
+                    "reserved_gb": torch.cuda.memory_reserved() / 1e9 if device.type == "cuda" else None,
+                    "alloc_retries": torch.cuda.memory_stats().get("num_alloc_retries", 0)
+                    if device.type == "cuda"
+                    else None,
                     **parts,
                 }
                 log.write(json.dumps(rec) + "\n")
