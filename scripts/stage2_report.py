@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 import time
 from pathlib import Path
@@ -117,6 +118,15 @@ def stability_stats(model, utts, store, device, logmel, amp: bool) -> dict:
     }
 
 
+def save_hyps(path: Path, utts, hyps: dict[str, str]) -> None:
+    """One line per utterance: id, reference, hypothesis, hangul_only flag (input of compare_runs.py)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        for u in utts:
+            row = {"id": u.id, "ref": u.text, "hyp": hyps[u.id], "hangul_only": u.hangul_only}
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", required=True)
@@ -126,6 +136,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--left", type=int, default=128)
     p.add_argument("--streaming-check", type=int, default=200, help="dev_h utterances for the fp16 check")
     p.add_argument("--limit", type=int, default=0, help="first N utterances per set (smoke test)")
+    p.add_argument(
+        "--train-sample",
+        type=int,
+        default=1000,
+        help="train utterances (seeded sample, full context, no augmentation) for the overfitting check",
+    )
     p.add_argument("--fp32", action="store_true")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = p.parse_args(argv)
@@ -148,19 +164,35 @@ def main(argv: list[str] | None = None) -> None:
             utts = utts[: args.limit]
         store = PcmStore(ROOT / "data" / "pcm", name)
         entry: dict = {"n": len(utts), "modes": {}}
-        full = score(
-            utts, decode_offline(model, vocab, utts, store, ChunkSpec(0, -1), device, logmel, amp=amp)
-        )
+        hyp_dir = ROOT / "reports" / "stage2" / "hyps"
+        hyps = decode_offline(model, vocab, utts, store, ChunkSpec(0, -1), device, logmel, amp=amp)
+        save_hyps(hyp_dir / f"{args.name}-{name}-full.jsonl", utts, hyps)
+        full = score(utts, hyps)
         entry["modes"]["full"] = full
         for chunk in (int(c) for c in args.chunks.split(",")):
             spec = ChunkSpec(chunk, args.left)
-            scored = score(utts, decode_offline(model, vocab, utts, store, spec, device, logmel, amp=amp))
+            hyps = decode_offline(model, vocab, utts, store, spec, device, logmel, amp=amp)
+            mode = f"chunk{chunk}_{chunk * FRAME_MS}ms"
+            save_hyps(hyp_dir / f"{args.name}-{name}-{mode}.jsonl", utts, hyps)
+            scored = score(utts, hyps)
             scored["ratio_to_full"] = rate(scored) / rate(full) if rate(full) else None
-            entry["modes"][f"chunk{chunk}_{chunk * FRAME_MS}ms"] = scored
+            entry["modes"][mode] = scored
         heads = decode_heads(model, vocab, utts, store, device, logmel, amp)
         entry["heads"] = {f"layer{layer}": score(utts, hyps) for layer, hyps in heads.items()}
         report["sets"][name] = entry
         print(f"{name}: full {rate(full) * 100:.2f} %", flush=True)
+    if args.train_sample:
+        train = read_manifest(ROOT / "manifests" / "train.jsonl")
+        picked = sorted(random.Random(0).sample(range(len(train)), min(args.train_sample, len(train))))
+        utts = [train[i] for i in picked]
+        store = PcmStore(ROOT / "data" / "pcm", "train")
+        scored = score(
+            utts, decode_offline(model, vocab, utts, store, ChunkSpec(0, -1), device, logmel, amp=amp)
+        )
+        report["train_sample"] = {"n": len(utts), "seed": 0, "full": scored}
+        dev_h = report["sets"].get("dev_h", {}).get("modes", {}).get("full")
+        if dev_h:
+            report["train_sample"]["ratio_to_dev_h"] = rate(scored) / rate(dev_h) if rate(dev_h) else None
     if args.streaming_check:
         utts = read_manifest(ROOT / "manifests" / "dev_h.jsonl")[: args.streaming_check]
         store = PcmStore(ROOT / "data" / "pcm", "dev_h")
@@ -195,6 +227,15 @@ def main(argv: list[str] | None = None) -> None:
                 f"| {name} | head {head} (full) | {rate(s) * 100:.2f} | | "
                 f"{s['all']['cer_ns']['rate'] * 100:.2f} | | |"
             )
+    if "train_sample" in report:
+        ts = report["train_sample"]
+        ratio = ts.get("ratio_to_dev_h")
+        lines += [
+            "",
+            f"train sample ({ts['n']} utts, seed 0, full context, no augmentation): CER_ns "
+            f"{rate(ts['full']) * 100:.2f} %"
+            + ("" if ratio is None else f", ratio to dev_h full {ratio:.3f} (overfitting flag if < 0.5)"),
+        ]
     if "streaming_check" in report:
         c = report["streaming_check"]
         lines += [
