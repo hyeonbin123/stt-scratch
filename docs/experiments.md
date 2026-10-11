@@ -134,6 +134,7 @@
 - epoch 32(약 13:00)부터 epoch 학습 시간이 265~281 s에서 474~571 s로 늘었다(epoch 52는 1,008 s). 데이터 대기는 그대로였고, 학습 프로세스가 GPU 메모리 9.4 GB를 예약(실사용 피크 4.7 GB, 나머지는 캐시 조각)한 데에 Windows 화면 처리 2.6 GB가 더해져 11 GB를 넘으며 시스템 메모리로 페이징된 것이 원인이다. epoch 32~52의 시간은 **부하 조건**이다(계산 결과에는 영향 없음)
 - 16:48 사용자 PC 사용을 위해 epoch 53 도중(step 36,700) 중단. 재개는 epoch 52 완료 체크포인트(step 36,244)에서 `--resume`로 하며, 데이터 순서·난수·옵티마이저·카운터를 복원하므로 처방은 같다. 중단된 epoch의 step 로그는 `train-discarded-before-resume-052*.jsonl`로 옮긴다
 - 19:19 재개 1차: 상한 `--cuda-memory-fraction 0.65`(7.3 GB)는 할당기가 상한에 닿을 때마다 캐시를 통째로 비워 step당 0.95 s로 더 느려져 19:28에 멈췄다. 재개 지점의 학습률·배치·청크 설정은 멈추기 전 기록과 같았고 CTC 손실도 GPU 비결정성 범위(30.45 vs 30.61)에서 일치했다
+- 23:37 Run B(전체 문맥 전용 통제군, peak LR 2e-3, 시드 1, Run A와 같은 처방) 시작 → 23:55 **발산 판정**(dev 손실 규칙: dev_mix 손실 182.6 → 187.7 → 198.6, epoch 3 dev_mix CER 94.1 %로 사전확률 해에 머묾. NaN 0, scale 정상). 같은 처방의 Run A는 epoch 2에 정렬이 시작됐으므로, 전체 문맥 전용 학습에서는 청크 마스크의 국소성이 없어 정렬 시작이 늦거나 막힌 것으로 본다(관측, 원인 단정 안 함). 등록 규칙대로 LR×0.5(1e-3)로 새 런 `outputs/stage2/runB-lr1e-3`에서 재시작, 또 발산하면 5e-4(최대 2회). 발산 기록은 `outputs/stage2/runB/epochs.jsonl`에 남긴다. H2.1은 LR이 다른(2e-3 vs 1e-3) 비교가 되므로 결과에 그 혼입을 함께 적는다
 - 19:29 재개 2차: 상한 0.8(8.8 GB) + `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.8,max_split_size_mb:256`(안 쓰는 캐시 블록을 조금씩 회수). 할당기 재시도 0회, 예약 7.3~7.4 GB, epoch 54 학습 291.7 s로 정상 속도 회복. 할당기 설정만 바뀌며 학습 계산은 같다. Run B도 같은 설정으로 돌린다. step 로그에 `reserved_gb`·`alloc_retries`를 함께 남긴다
 
 ### 2단계 결과 — Run A (2026-10-11 23:29 학습 끝, 23:37 평가; `reports/stage2/runA-avg10.{md,json}`)
