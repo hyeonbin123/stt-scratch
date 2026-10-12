@@ -57,6 +57,13 @@ async def stream_one(url: str, pcm: np.ndarray, realtime: bool) -> dict:
     stats = next((e for e in events if e["type"] == "stats"), {})
     text = " ".join(e["text"] for e in finals)
     first_partial = partials[0]["t"] if partials else None
+    # caption lag: arrival of each partial minus the send time of the latest packet sent before it
+    # (network + queueing + compute; the chunk's own duration is the algorithmic latency, reported apart)
+    lags = []
+    for e in partials:
+        before = [s for s in sent_t if s <= e["t"]]
+        if before:
+            lags.append((e["t"] - before[-1]) * 1000)
     last_final = finals[-1]["t"] if finals else None
     return {
         "text": text,
@@ -64,6 +71,7 @@ async def stream_one(url: str, pcm: np.ndarray, realtime: bool) -> dict:
         "n_finals": len(finals),
         "rules": [e["rule"] for e in finals],
         "first_partial_s": first_partial,
+        "partial_lag_ms": lags,
         "final_after_last_audio_s": (last_final - t_last_audio) if last_final else None,
         "chunks": stats.get("chunks"),
         "compute_ms_p50": stats.get("compute_ms_p50"),  # per encoder chunk, from the server (H6.2)
