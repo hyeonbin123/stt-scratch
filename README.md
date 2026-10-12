@@ -39,13 +39,20 @@ uv run ruff format src scripts tests && uv run ruff check src scripts tests
 
 ```bash
 uv run python scripts/bench_stage0.py --durations 200,300,400,600
-uv run python scripts/stage1_sweep.py --epochs 5 --lrs 1e-3,2e-3 --seeds 1,2,3
-uv run python -m stt_scratch.train --run outputs/stage2/runA --epochs 100 --lr 1e-3 --seed 1
+uv run python scripts/stage1_sweep.py --epochs 5 --lrs 1e-3,2e-3 --seeds 1,2,3 --schedule-steps 69700
+uv run python -m stt_scratch.train --run outputs/stage2/runA --epochs 100 --lr 2e-3 --seed 1 --cuda-memory-fraction 0.8
 uv run python scripts/average_checkpoints.py --run outputs/stage2/runA --k 10 --out outputs/stage2/runA/avg10.pt
+uv run python scripts/stage2_report.py --checkpoint outputs/stage2/runA/avg10.pt --name runA-avg10
+uv run python scripts/compare_runs.py --a reports/stage2/hyps/runA-avg10-dev_mix-full.jsonl --b reports/stage2/hyps/runB-lr1e-3-avg10-dev_mix-full.jsonl --name H2.1-dev_mix
+uv run python scripts/stage3.py --arms a,b,c,d --budget-hours 45
+uv run python scripts/stage4.py --start runA
+uv run python scripts/stage6.py grid --checkpoint outputs/stage4/control/avg10.pt
 uv run python -m stt_scratch.evaluate --checkpoint outputs/stage2/runA/avg10.pt --manifest dev_mix --chunk 8 --left 128 --streaming
 ```
 
-`train.py`는 매 epoch `epochs.jsonl`에 dev CER과 dev CTC 손실을, `train.jsonl`에 손실·LR·GradScaler scale을 남기고 체크포인트를 저장한다. 발산 판정과 재개 규칙은 `docs/experiments.md` "fp16 규칙"과 "규칙 변경"에 있다.
+`train.py`는 매 epoch `epochs.jsonl`에 dev CER과 dev CTC 손실을, `train.jsonl`에 손실·LR·GradScaler scale·GPU 메모리를 남기고 체크포인트를 저장한다. 발산 판정, 재개(`--resume`, 처방 대조), SpecAugment 커리큘럼(epoch 3부터), QK-norm은 `docs/experiments.md` "fp16 규칙"과 "규칙 변경"에 있다. Windows에서는 PyTorch 할당기 조각이 커져 GPU 메모리가 넘치지 않도록 `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.8,max_split_size_mb:256`과 `--cuda-memory-fraction 0.8`을 함께 쓴다.
+
+4단계 지연 측정의 기준 정렬은 Montreal Forced Aligner 3.4.3 + `korean_mfa` 3.0으로 만든다(`scripts/export_mfa_corpus.py`로 내보낸 뒤 `mfa align ... --g2p_model_path korean_mfa --single_speaker --output_format csv`; 한국어 토큰화에 `python-mecab-ko` 필요). 7단계 봉인 test(`scripts/stage7.py`)는 확인 플래그를 요구하고 한 번만 실행된다.
 
 ## 스트리밍 서비스 (6단계)
 
