@@ -154,7 +154,9 @@ def evaluate_manifest(
     out_path: Path | None = None,
     checkpoint: str = "",
     amp: bool = True,
+    extra: dict | None = None,
 ) -> dict:
+    """Decode and score one manifest; `extra` fields (e.g. provenance) are stored in the result file."""
     utts = read_manifest(ROOT / "manifests" / f"{name}.jsonl")
     store = PcmStore(ROOT / "data" / "pcm", name)
     logmel = logmel or LogMel().to(device)
@@ -176,6 +178,7 @@ def evaluate_manifest(
         "n": len(utts),
         **scored,
         "cer_ns": scored["hangul_only"]["cer_ns"]["rate"],
+        **(extra or {}),
     }
     if out_path:
         out_path.parent.mkdir(parents=True, exist_ok=True)

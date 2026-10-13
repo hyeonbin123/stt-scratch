@@ -1,21 +1,45 @@
 {
+ "meta": {
+  "server_info": {
+   "checkpoint": "D:\\coding\\stt-scratch\\outputs\\stage4\\trimtail\\avg10.pt",
+   "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+   "chunk_frames": 8,
+   "chunk_ms": 320,
+   "left_frames": 128,
+   "device": "cuda",
+   "precision": "fp16-autocast",
+   "endpoint": {
+    "blank_threshold": 0.8,
+    "rule1_s": 2.4,
+    "rule2_s": 1.2,
+    "rule3_s": 20.0
+   },
+   "reset_cache_on_endpoint": false,
+   "vocab": 1288,
+   "warm_up_s": 7.75
+  },
+  "manifest": "dev_h",
+  "limit": 50,
+  "paced": true,
+  "started": "2026-10-14 02:00:40"
+ },
  "utterances": 50,
  "partial_lag_ms": {
-  "p50": 62.75535002350807,
-  "p90": 63.73683998826891,
-  "max": 85.01510007772595,
+  "p50": 62.70404992392287,
+  "p90": 63.74486001441255,
+  "max": 98.23689993936568,
   "n": 1098
  },
  "first_partial_s": {
-  "p50": 0.743679599952884,
-  "p90": 1.0676096200360916,
-  "max": 1.4062020999845117,
+  "p50": 0.7416802499792539,
+  "p90": 1.0751195800257847,
+  "max": 1.4073898999486119,
   "n": 50
  },
  "final_after_last_audio_s": {
-  "p50": 0.22112169995671138,
-  "p90": 0.34748932999791576,
-  "max": 0.38462280004750937,
+  "p50": 0.22089520003646612,
+  "p90": 0.3380082599818707,
+  "max": 0.3951064998982474,
   "n": 50
  },
  "client_wait_after_last_packet_s": {
@@ -25,14 +49,15 @@
   "n": 50
  },
  "flush_round_trip_s": {
-  "p50": 0.07185794996935874,
-  "p90": 0.08021464000139385,
-  "max": 0.10342700009420513,
+  "p50": 0.06312370003433898,
+  "p90": 0.06423886000411586,
+  "max": 0.09430240001529455,
   "n": 50
  },
- "server_compute_ms_p50_median": 60.74432501918636,
- "server_compute_ms_p90_median": 61.56016493914649,
- "server_compute_ms_max": 82.86830002907664,
+ "flush_round_trip_basis": "measured: final arrival - flush send time",
+ "server_compute_ms_p50_median": 60.62309999833815,
+ "server_compute_ms_p90_median": 61.50232504005544,
+ "server_compute_ms_max": 95.6250000745058,
  "final_rules": {
   "rule1": 0,
   "rule2": 0,

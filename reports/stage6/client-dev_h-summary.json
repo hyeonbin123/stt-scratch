@@ -1,4 +1,5 @@
 {
+ "meta": null,
  "utterances": 50,
  "partial_lag_ms": {
   "p50": 62.427450029645115,
@@ -30,6 +31,7 @@
   "max": 0.5235691999383271,
   "n": 50
  },
+ "flush_round_trip_basis": "nominal: last audio -> final minus the last packet duration (paced runs only)",
  "server_compute_ms_p50_median": 60.43587502790615,
  "server_compute_ms_p90_median": 61.34711999911815,
  "server_compute_ms_max": 707.5056999456137,

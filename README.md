@@ -63,10 +63,10 @@ uv run python -m stt_scratch.service.server
 
 기본값은 6단계에서 정한 구성이다: 최종 모델 `outputs/stage4/trimtail/avg10.pt`, 320 ms 청크, 좌측 문맥 128프레임(5.12 s), GPU fp16 autocast, 토큰 뒤 묵음 1.2 s 끝점, 끝점 뒤 인코더 캐시 유지. 시작할 때 부분 청크 길이마다 한 번씩 예열한다(약 8 s). 브라우저에서 `http://127.0.0.1:8765/`를 열면 마이크 입력을 320 ms마다 보내고 부분 자막(수정 없이 덧붙기만 함)과 끝점으로 확정된 세그먼트를 보여 준다. 프로토콜은 `src/stt_scratch/service/server.py` 머리말에 있다. 인증이 없으므로 로컬 데모용이다.
 
-6단계 측정(dev, `docs/experiments.md` "6단계 결과"): 실제 캐시 스트리밍 CER은 simulated와 0.03포인트 안, 청크당 계산 p50 약 62 ms(GPU) / 44 ms(CPU 1스레드), 부분 자막 지연 p50 62 ms(로컬), 끝점 확정 EP50 1.3 s, 10분 연속 입력에서 계산 시간·메모리 증가 없음. 실시간 클라이언트로 지연을 재려면:
+6단계 측정(dev, `docs/experiments.md` "6단계 결과"): 실제 캐시 스트리밍 CER은 simulated와 0.03포인트 안, 청크당 계산 p50 약 62 ms(GPU) / 44 ms(CPU 1스레드), 부분 자막 지연 p50 62 ms(로컬), 끝점 확정 EP50 1.3 s, 10분 길이 오디오를 한 세션으로 처리했을 때(실시간이 아니라 약 2분에 처리) 청크 계산 시간·메모리 증가 없음. 실시간 클라이언트로 지연을 재려면:
 
 ```bash
-uv run python scripts/stream_client.py --manifest dev_h --limit 50 --name client-dev_h-mine
+uv run python scripts/stream_client.py --manifest dev_h --limit 50 --name client-dev_h-mine   # server running
 uv run python scripts/stream_client.py --summarize --name client-dev_h-mine
 ```
 

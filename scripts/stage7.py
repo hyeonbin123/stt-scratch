@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -71,11 +72,14 @@ def preflight(args, ckpt: Path) -> None:
         raise SystemExit("the service configuration fixed in Stage 2 is chunk 8 (320 ms), left 128")
     if not torch.cuda.is_available():
         raise SystemExit("the sealed test runs on the GPU with fp16 autocast, as every dev measurement")
-    h61 = ROOT / "reports" / "stage6" / "h61.json"
-    if not h61.exists() or not json.loads(h61.read_text(encoding="utf-8")).get("h61_met"):
+    h61_path = ROOT / "reports" / "stage6" / "h61.json"
+    h61 = json.loads(h61_path.read_text(encoding="utf-8")) if h61_path.exists() else {}
+    if not h61.get("h61_met"):
         raise SystemExit("Stage 6 H6.1 (real streaming == simulated) must be met before the sealed test")
-    if json.loads(h61.read_text(encoding="utf-8")).get("checkpoint_sha256") not in (None, sha256(ckpt)):
-        raise SystemExit("Stage 6 was measured with another checkpoint")
+    want_h61 = {"checkpoint_sha256": sha256(ckpt), "spec": "chunk8 left128", "device": "cuda", "limit": 0}
+    got_h61 = {k: h61.get(k) for k in want_h61}
+    if got_h61 != want_h61:
+        raise SystemExit(f"Stage 6 H6.1 was not measured with the sealed configuration: {got_h61}")
     for name in SETS:
         if not (ROOT / "manifests" / f"{name}.jsonl").exists():
             raise SystemExit(f"manifest {name} missing")
@@ -94,26 +98,73 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = p.parse_args(argv)
     out_dir = ROOT / "reports" / "final"
-    lock = out_dir / "sealed_test.lock"
+    lock = out_dir / "sealed_test.lock"  # the seal: created once, never removed
+    config_path = out_dir / "sealed_config.json"
+    run_lock = out_dir / "sealed_test.running"  # one process at a time, first run and resume alike
     if not args.confirm_sealed_test:
         raise SystemExit("pass --confirm-sealed-test: the sealed test is measured once and never again")
     ckpt = ROOT / args.checkpoint
+    preflight(args, ckpt)  # also on resume: the configuration must still be the sealed one
+    config = {
+        "checkpoint": Path(args.checkpoint).as_posix(),
+        "checkpoint_sha256": sha256(ckpt),
+        "spec": f"chunk{args.chunk} left{args.left}",
+        "precision": "fp16-autocast",
+        "device": "cuda",
+    }
     if args.resume_sealed:
         if not lock.exists() or "finished" in lock.read_text(encoding="utf-8"):
             raise SystemExit("nothing to resume: no unfinished sealed test")
-    else:
-        preflight(args, ckpt)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            with open(lock, "x", encoding="utf-8") as f:  # exclusive: a second run cannot start
-                f.write(
-                    f"started {time.strftime('%Y-%m-%d %H:%M:%S')}, checkpoint {args.checkpoint} "
-                    f"sha256 {sha256(ckpt)}\n"
-                )
-        except FileExistsError as err:
-            raise SystemExit(
-                f"the sealed test was already started ({lock.read_text(encoding='utf-8').strip()})"
-            ) from err
+        sealed = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else None
+        if sealed != config:
+            raise SystemExit(f"resume refused: sealed configuration {sealed} differs from {config}")
+    elif lock.exists():
+        raise SystemExit(f"the sealed test was already started ({lock.read_text(encoding='utf-8').strip()})")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        run_fd = open(run_lock, "x", encoding="utf-8")  # exclusive
+    except FileExistsError as err:
+        raise SystemExit(
+            f"another sealed-test process holds {run_lock}; if none is running (e.g. after a crash), delete "
+            "that file and resume with --resume-sealed"
+        ) from err
+    with run_fd:
+        run_fd.write(f"pid {os.getpid()} {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    try:
+        run_sealed(args, ckpt, out_dir, lock, config_path, config)
+    finally:
+        run_lock.unlink(missing_ok=True)
+
+
+def check_saved(path: Path, name: str, mode: str, config: dict) -> dict:
+    """A result saved before an interruption is reused only if it was measured with the sealed config."""
+    r = json.loads(path.read_text(encoding="utf-8"))
+    want_mode = "full" if mode == "full" else f"streaming {config['spec']}"
+    want = {
+        "manifest": name,
+        "mode": want_mode,
+        "precision": config["precision"],
+        "checkpoint": config["checkpoint"],
+        "checkpoint_sha256": config["checkpoint_sha256"],
+        "n": len(read_manifest(ROOT / "manifests" / f"{name}.jsonl")),
+    }
+    got = {k: r.get(k) for k in want}
+    if got != want or not path.with_suffix(".hyps.jsonl").exists():
+        raise SystemExit(f"saved result {path} does not match the sealed configuration: {got} vs {want}")
+    return r
+
+
+def run_sealed(args, ckpt: Path, out_dir: Path, lock: Path, config_path: Path, config: dict) -> None:
+    if not args.resume_sealed:
+        stale = sorted(p.name for p in out_dir.glob("test_*.json*"))
+        if stale:
+            raise SystemExit(f"results exist before the seal was started: {stale}")
+        with open(lock, "x", encoding="utf-8") as f:  # exclusive: a second sealed test cannot start
+            f.write(
+                f"started {time.strftime('%Y-%m-%d %H:%M:%S')}, checkpoint {args.checkpoint} "
+                f"sha256 {config['checkpoint_sha256']}\n"
+            )
+        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=1), encoding="utf-8")
     device = torch.device("cuda")
     model, state = load_model(ckpt, device)
     vocab = Vocab.load(ROOT / "manifests" / "vocab.json")
@@ -121,9 +172,9 @@ def main(argv: list[str] | None = None) -> None:
     spec = ChunkSpec(args.chunk, args.left)
     report = {
         "checkpoint": args.checkpoint,
-        "checkpoint_sha256": sha256(ckpt),
+        "checkpoint_sha256": config["checkpoint_sha256"],
         "averaged_epochs": state.get("averaged"),
-        "service_spec": f"chunk{args.chunk} left{args.left}",
+        "service_spec": config["spec"],
         "lock": lock.read_text(encoding="utf-8").strip(),
         "resumed": args.resume_sealed,
         "sets": {},
@@ -132,8 +183,8 @@ def main(argv: list[str] | None = None) -> None:
         results = {}
         for mode, mode_spec, streaming in (("full", ChunkSpec(0, -1), False), ("streaming", spec, True)):
             path = out_dir / f"{name}-{mode}.json"
-            if path.exists():  # measured before an interruption: reuse, never re-measure
-                results[mode] = json.loads(path.read_text(encoding="utf-8"))
+            if path.exists():  # measured before an interruption: reuse (never re-measure) if it matches
+                results[mode] = check_saved(path, name, mode, config)
                 continue
             results[mode] = evaluate_manifest(
                 model,
@@ -144,7 +195,8 @@ def main(argv: list[str] | None = None) -> None:
                 logmel=logmel,
                 streaming=streaming,
                 out_path=path,
-                checkpoint=args.checkpoint,
+                checkpoint=config["checkpoint"],
+                extra={"checkpoint_sha256": config["checkpoint_sha256"]},
             )
         report["sets"][name] = {**results, "unproducible_char_lower_bound": oov_bound(name, vocab)}
         print(
@@ -173,16 +225,29 @@ def main(argv: list[str] | None = None) -> None:
     (out_dir / "sealed_test.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8"
     )
+
+    def cell(s: dict) -> str:
+        """rate (95 % bootstrap interval) in percent"""
+        lo, hi = s["ci"]
+        return f"{s['rate'] * 100:.2f} ({lo * 100:.2f}-{hi * 100:.2f})"
+
     lines = [
         f"# 봉인 test ({report['lock']}; finished {report['finished']})",
         "",
-        "| set | full CER_ns all | full 한글 전용 | streaming 한글 전용 | 출력 불가능 문자 하한 all |",
-        "|---|---|---|---|---|",
+        f"checkpoint `{report['checkpoint']}` (SHA-256 {report['checkpoint_sha256'][:12]}...), greedy, "
+        f"fp16 autocast; streaming = real cache streaming {report['service_spec']}",
+        "",
+        "| set | n | full CER_ns all | full CER_ns 한글 전용 | full CER_ws 한글 전용 "
+        "| streaming CER_ns 한글 전용 | streaming CER_ws 한글 전용 "
+        "| 출력 불가능 문자 하한 all / 한글 전용 |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for name, r in report["sets"].items():
+        f_, s_, b_ = r["full"], r["streaming"], r["unproducible_char_lower_bound"]
         lines.append(
-            f"| {name} | {r['full']['all']['cer_ns']['rate'] * 100:.2f} | {r['full']['cer_ns'] * 100:.2f} | "
-            f"{r['streaming']['cer_ns'] * 100:.2f} | {r['unproducible_char_lower_bound']['all'] * 100:.2f} |"
+            f"| {name} | {f_['n']} | {cell(f_['all']['cer_ns'])} | {cell(f_['hangul_only']['cer_ns'])} | "
+            f"{cell(f_['hangul_only']['cer_ws'])} | {cell(s_['hangul_only']['cer_ns'])} | "
+            f"{cell(s_['hangul_only']['cer_ws'])} | {b_['all'] * 100:.2f} / {b_['hangul_only'] * 100:.2f} |"
         )
     lines += ["", f"H7.1: {report['h71']}", f"H7.2: {report['h72']}"]
     (out_dir / "sealed_test.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

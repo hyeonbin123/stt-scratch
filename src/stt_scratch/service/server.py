@@ -19,6 +19,7 @@ GET / serves web/index.html (microphone client). No authentication: local demo o
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -66,6 +67,7 @@ def build_app(
     app = FastAPI(title="stt-scratch streaming")
     info = {
         "checkpoint": str(checkpoint),
+        "checkpoint_sha256": hashlib.sha256(Path(checkpoint).read_bytes()).hexdigest(),
         "chunk_frames": chunk,
         "chunk_ms": chunk * 40,
         "left_frames": left,

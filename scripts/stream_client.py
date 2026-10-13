@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import json
 import time
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,7 @@ async def stream_one(url: str, pcm: np.ndarray, realtime: bool) -> dict:
             sent_t.append(time.perf_counter() - t_start)
             if realtime:
                 await asyncio.sleep(len(piece) / 16000)
+        t_flush = time.perf_counter() - t_start
         await ws.send("flush")
         deadline = time.perf_counter() + 5.0  # the server answers flush with the events, then "stats"
         while time.perf_counter() < deadline and not any(e["type"] == "stats" for e in events):
@@ -76,6 +78,8 @@ async def stream_one(url: str, pcm: np.ndarray, realtime: bool) -> dict:
         "first_partial_s": first_partial,
         "partial_lag_ms": lags,
         "final_after_last_audio_s": (last_final - sent_t[-1]) if last_final and sent_t else None,
+        "final_after_flush_s": (last_final - t_flush) if last_final else None,
+        "paced": realtime,
         "chunks": stats.get("chunks"),
         "compute_ms_p50": stats.get("compute_ms_p50"),  # per encoder chunk, from the server (H6.2)
         "compute_ms_p90": stats.get("compute_ms_p90"),
@@ -88,6 +92,13 @@ async def main_async(args: argparse.Namespace) -> None:
     store = PcmStore(ROOT / "data" / "pcm", args.manifest)
     out = ROOT / "reports" / "stage6" / f"{args.name or 'client-' + args.manifest}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
+    info_url = args.url.replace("ws://", "http://").rsplit("/", 1)[0] + "/info"
+    with urllib.request.urlopen(info_url, timeout=10) as r:  # provenance: what the server served
+        server_info = json.loads(r.read())
+    meta = {"server_info": server_info, "manifest": args.manifest, "limit": args.limit,
+            "paced": not args.fast, "started": time.strftime("%Y-%m-%d %H:%M:%S")}  # fmt: skip
+    out.with_name(out.stem + "-meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1),
+                                                     encoding="utf-8")  # fmt: skip
     with open(out, "w", encoding="utf-8") as f:
         for i, u in enumerate(utts):
             offset, length = store.index[u.id]
@@ -130,15 +141,23 @@ def summarize(manifest: str, simulated: str, name: str = "") -> dict:
 
     waits = [last_packet_samples(store.index[r["id"]][1]) / 16000 for r in rows]
     finals = [r["final_after_last_audio_s"] for r in rows]
+    measured_flush = all("final_after_flush_s" in r for r in rows)
     picked = [utts[r["id"]] for r in rows]
     scored = score(picked, {r["id"]: r["text"] for r in rows})
+    meta_path = ROOT / "reports" / "stage6" / f"{name}-meta.json"
     out = {
+        "meta": json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else None,
         "utterances": len(rows),
         "partial_lag_ms": pct(x for r in rows for x in r["partial_lag_ms"]),
         "first_partial_s": pct(r["first_partial_s"] for r in rows),
         "final_after_last_audio_s": pct(finals),
         "client_wait_after_last_packet_s": pct(waits),
-        "flush_round_trip_s": pct(f - w for f, w in zip(finals, waits, strict=True) if f is not None),
+        "flush_round_trip_s": pct(r["final_after_flush_s"] for r in rows)
+        if measured_flush
+        else pct(f - w for f, w in zip(finals, waits, strict=True) if f is not None),
+        "flush_round_trip_basis": "measured: final arrival - flush send time"
+        if measured_flush
+        else "nominal: last audio -> final minus the last packet duration (paced runs only)",
         "server_compute_ms_p50_median": float(np.median([r["compute_ms_p50"] for r in rows])),
         "server_compute_ms_p90_median": float(np.median([r["compute_ms_p90"] for r in rows])),
         "server_compute_ms_max": float(max(r["compute_ms_max"] for r in rows)),

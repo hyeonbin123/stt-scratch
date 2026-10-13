@@ -29,32 +29,32 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def summarize(run: Path) -> dict:
-    epochs = [r for r in read_jsonl(run / "epochs.jsonl") if "epoch_time_s" in r]
+    rows = [r for r in read_jsonl(run / "epochs.jsonl") if "epoch_time_s" in r]
+    # a run stopped mid-epoch (NaN/scale rule or --max-steps) writes a "stopped_early" row with the partial
+    # epoch's time and the final counters: it adds compute time and counters but is not a completed epoch
+    epochs = [r for r in rows if not r.get("stopped_early")]
     steps = read_jsonl(run / "train.jsonl")
     meta = json.loads((run / "meta.json").read_text(encoding="utf-8")) if (run / "meta.json").exists() else {}
-    divergence = next((r["divergence"] for r in reversed(epochs) if r.get("divergence")), None)
-    if divergence is None:  # a NaN/scale stop is written to the summary line, which has no epoch_time_s
-        divergence = next(
-            (r["divergence"] for r in reversed(read_jsonl(run / "epochs.jsonl")) if r.get("divergence")), None
-        )
+    divergence = next((r["divergence"] for r in reversed(rows) if r.get("divergence")), None)
     scales = [r["scale"] for r in steps if isinstance(r.get("scale"), (int, float))]
     scales_set = set(scales)
     # skip the first 300 logged steps' scale: GradScaler starts at 2^15 and halves on purpose until it fits
     late_scales = [r["scale"] for r in steps if r.get("step", 0) >= 300 and r.get("scale") in scales_set]
-    last = epochs[-1] if epochs else {}
+    last = rows[-1] if rows else {}
     args = meta.get("args", {})
     return {
         "run": run.relative_to(ROOT / "outputs").as_posix(),
         "lr": args.get("lr"),
         "init": bool(args.get("init")),
         "epochs": len(epochs),
-        "compute_h": sum(r.get("epoch_time_s", 0.0) for r in epochs) / 3600,
+        "stopped_mid_epoch": bool(last.get("stopped_early")),
+        "compute_h": sum(r.get("epoch_time_s", 0.0) for r in rows) / 3600,
         "skipped_steps": last.get("skipped"),
         "updates": last.get("updates"),
-        "nan_count": max((r.get("nan_count", 0) for r in epochs), default=0),
+        "nan_count": max((r.get("nan_count", 0) for r in rows), default=0),
         "min_scale": min(scales) if scales else None,
         "min_scale_after_300": min(late_scales) if late_scales else None,
-        "max_low_scale_streak": max((r.get("low_scale_streak", 0) for r in epochs), default=0),
+        "max_low_scale_streak": max((r.get("low_scale_streak", 0) for r in rows), default=0),
         "divergence": divergence.get("reason") if isinstance(divergence, dict) else divergence,
         "precision": "fp32" if args.get("fp32") else "fp16",
     }
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
             f"{fmt(r['skipped_steps'])} | {r['nan_count']} | {fmt(r['min_scale_after_300'], 'g')} | "
             f"{fmt(r['divergence'])} |"
         )
-    note = "epoch 학습 시간만; dev 평가·일시 중지·측정 제외"
+    note = "epoch 학습 시간만; dev 평가·일시 중지·측정·재개로 버린 구간 제외"
     lines += ["", f"학습 계산 합계 {total:.2f} h ({note}), 발산 {len(diverged)}런"]
     out.with_suffix(".md").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     print("\n".join(lines))
