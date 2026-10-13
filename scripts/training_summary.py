@@ -38,8 +38,9 @@ def summarize(run: Path) -> dict:
             (r["divergence"] for r in reversed(read_jsonl(run / "epochs.jsonl")) if r.get("divergence")), None
         )
     scales = [r["scale"] for r in steps if isinstance(r.get("scale"), (int, float))]
+    scales_set = set(scales)
     # skip the first 300 logged steps' scale: GradScaler starts at 2^15 and halves on purpose until it fits
-    late_scales = [r["scale"] for r in steps if isinstance(r.get("scale"), (int, float)) and r.get("step", 0) >= 300]
+    late_scales = [r["scale"] for r in steps if r.get("step", 0) >= 300 and r.get("scale") in scales_set]
     last = epochs[-1] if epochs else {}
     args = meta.get("args", {})
     return {
@@ -69,10 +70,8 @@ def main(argv: list[str] | None = None) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     total = sum(r["compute_h"] for r in rows)
     diverged = [r["run"] for r in rows if r["divergence"]]
-    (out.with_suffix(".json")).write_text(
-        json.dumps({"runs": rows, "compute_h_total": total, "diverged": diverged}, ensure_ascii=False, indent=1),
-        encoding="utf-8",
-    )
+    report = {"runs": rows, "compute_h_total": total, "diverged": diverged}
+    out.with_suffix(".json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
 
     def fmt(v, spec=""):
         if v is None or (isinstance(v, float) and math.isnan(v)):
@@ -80,17 +79,20 @@ def main(argv: list[str] | None = None) -> None:
         return format(v, spec) if spec else str(v)
 
     lines = [
-        "| run | LR | 이어 학습 | epoch | 학습 계산 h | 건너뛴 step | NaN | 최저 scale(step 300 이후) | 발산 |",
+        "| run | LR | 이어 학습 | epoch | 학습 계산 h | 건너뛴 step | NaN "
+        "| 최저 scale(step 300 이후) | 발산 |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         lines.append(
-            f"| {r['run']} | {fmt(r['lr'])} | {'예' if r['init'] else ''} | {r['epochs']} | {r['compute_h']:.2f} | "
+            f"| {r['run']} | {fmt(r['lr'])} | {'예' if r['init'] else ''} | {r['epochs']} | "
+            f"{r['compute_h']:.2f} | "
             f"{fmt(r['skipped_steps'])} | {r['nan_count']} | {fmt(r['min_scale_after_300'], 'g')} | "
             f"{fmt(r['divergence'])} |"
         )
-    lines += ["", f"학습 계산 합계 {total:.2f} h (epoch 학습 시간만; dev 평가·일시 중지·측정 제외), 발산 {len(diverged)}런"]
-    (out.with_suffix(".md")).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    note = "epoch 학습 시간만; dev 평가·일시 중지·측정 제외"
+    lines += ["", f"학습 계산 합계 {total:.2f} h ({note}), 발산 {len(diverged)}런"]
+    out.with_suffix(".md").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     print("\n".join(lines))
 
 
