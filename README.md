@@ -7,6 +7,23 @@
 - 측정 규칙(사전 등록)과 결과: `docs/experiments.md`. 단계 계획: `docs/plan.md`. AI가 만든 코드의 검증 기록: `docs/ai-verification.md`
 - 하드웨어: RTX 2080 Ti 11 GB 한 장(fp16 autocast, bf16 없음), Windows 11
 
+## 결과 (봉인 test, 2026-10-14 1회)
+
+최종 모델 `outputs/stage4/trimtail/avg10.pt`, greedy, CER_ns(공백 제외 문자 오류율, 한글 전용 발화) %. 스트리밍은 서비스 구성(320 ms 청크, 좌측 5.12 s)의 실제 캐시 스트리밍. 괄호는 95 % 부트스트랩 구간. 전체 표·CER_ws·출력 불가능 문자 하한은 `docs/experiments.md` "7단계 결과"와 `reports/final/sealed_test.md`.
+
+| test 세트 | full | 스트리밍 320 ms |
+|---|---|---|
+| Zeroth 공식 test | 3.67 (2.97-4.42) | 5.35 (4.55-6.26) |
+| 　└ 학습 세트에 있는 문장 397발화 | 1.85 | 3.31 |
+| 　└ 처음 보는 문장 60발화 | 16.01 | 19.25 |
+| Zeroth test_H (처음 보는 문장만, 1,280발화) | 15.55 (15.09-16.02) | 18.08 (17.56-18.55) |
+| FLEURS 한국어 test | 14.62 (13.47-15.89) | 17.74 (16.59-19.07) |
+| Common Voice 22 한국어 test | 28.19 (26.62-29.64) | 33.35 (31.63-34.92) |
+
+- 같은 Zeroth 공식 test에서 whisper-large-v3-turbo는 제로샷 4.48 %, LoRA 파인튜닝 1.96 %다(별도 프로젝트 whisper-ko-ft, 같은 채점 정규화). 3.67 %는 그 사이이고 같은 프로젝트에서 파인튜닝한 whisper-small(3.78 %)과 비슷하지만, Zeroth test 문장 대부분이 학습 세트에도 있어 문장 암기의 덕을 본 값이다. 처음 보는 문장에서는 15~16 %다
+- 스트리밍 서비스(dev 측정): 실제 캐시 스트리밍 CER은 simulated와 0.03포인트 안, 부분 자막 지연 p50 62 ms(로컬), 끝점 확정 EP50 1.3 s, 청크당 계산 p50 62 ms(GPU) / 44 ms(CPU 1스레드), 10분 길이 오디오에서 계산 시간·메모리 증가 없음. GPU 계산 p90 ≤ 50 ms 가설(H6.2)은 미충족(63 ms; 연산 수가 많아 커널 실행 호출이 병목인 것으로 보임)
+- 학습: 공개 데이터 51.8 h, RTX 2080 Ti 한 장, 실험 전체 GPU 약 65 h(최종 모델은 3단계 (a) 100 epoch + 4단계 TrimTail 15 epoch 이어 학습). fp16 수치 발산은 규칙 변경 13(SpecAugment 커리큘럼·QK-norm) 뒤 0회
+
 ## 설치
 
 ```bash

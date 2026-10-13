@@ -1,0 +1,47 @@
+{
+ "note": "post-hoc split of the saved sealed-test hypotheses; no new decoding",
+ "full": {
+  "sentence_in_train": {
+   "n": 397,
+   "rate": 0.018548243267344392,
+   "ci": [
+    0.012548892705457155,
+    0.02548281442535595
+   ],
+   "edits": 312,
+   "length": 16821
+  },
+  "sentence_not_in_train": {
+   "n": 60,
+   "rate": 0.1601134981759222,
+   "ci": [
+    0.14146083628550912,
+    0.17998339466153282
+   ],
+   "edits": 395,
+   "length": 2467
+  }
+ },
+ "streaming": {
+  "sentence_in_train": {
+   "n": 397,
+   "rate": 0.03311337019202188,
+   "ci": [
+    0.02630920224574187,
+    0.040919296059004545
+   ],
+   "edits": 557,
+   "length": 16821
+  },
+  "sentence_not_in_train": {
+   "n": 60,
+   "rate": 0.19254154843940008,
+   "ci": [
+    0.17112780640515515,
+    0.2128386740701097
+   ],
+   "edits": 475,
+   "length": 2467
+  }
+ }
+}

@@ -1,0 +1,485 @@
+{
+ "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+ "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+ "averaged_epochs": [
+  14,
+  13,
+  11,
+  12,
+  10,
+  9,
+  7,
+  8,
+  6,
+  3
+ ],
+ "service_spec": "chunk8 left128",
+ "lock": "started 2026-10-14 02:10:45, checkpoint outputs/stage4/trimtail/avg10.pt sha256 6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+ "resumed": false,
+ "sets": {
+  "test_zeroth": {
+   "full": {
+    "manifest": "test_zeroth",
+    "mode": "full",
+    "precision": "fp16-autocast",
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "n": 457,
+    "all": {
+     "cer_ns": {
+      "n": 457,
+      "rate": 0.036654914973040235,
+      "ci": [
+       0.029651220473191516,
+       0.0442203514651852
+      ],
+      "edits": 707,
+      "length": 19288
+     },
+     "cer_ws": {
+      "n": 457,
+      "rate": 0.03572550251256281,
+      "ci": [
+       0.02920577275978366,
+       0.04301768722947459
+      ],
+      "edits": 910,
+      "length": 25472
+     }
+    },
+    "hangul_only": {
+     "cer_ns": {
+      "n": 457,
+      "rate": 0.036654914973040235,
+      "ci": [
+       0.029651220473191516,
+       0.0442203514651852
+      ],
+      "edits": 707,
+      "length": 19288
+     },
+     "cer_ws": {
+      "n": 457,
+      "rate": 0.03572550251256281,
+      "ci": [
+       0.02920577275978366,
+       0.04301768722947459
+      ],
+      "edits": 910,
+      "length": 25472
+     }
+    },
+    "cer_ns": 0.036654914973040235,
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b"
+   },
+   "streaming": {
+    "manifest": "test_zeroth",
+    "mode": "streaming chunk8 left128",
+    "precision": "fp16-autocast",
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "n": 457,
+    "all": {
+     "cer_ns": {
+      "n": 457,
+      "rate": 0.053504769805060144,
+      "ci": [
+       0.04553727080295645,
+       0.0625571768599952
+      ],
+      "edits": 1032,
+      "length": 19288
+     },
+     "cer_ws": {
+      "n": 457,
+      "rate": 0.05307788944723618,
+      "ci": [
+       0.04529328242488212,
+       0.06130888040967242
+      ],
+      "edits": 1352,
+      "length": 25472
+     }
+    },
+    "hangul_only": {
+     "cer_ns": {
+      "n": 457,
+      "rate": 0.053504769805060144,
+      "ci": [
+       0.04553727080295645,
+       0.0625571768599952
+      ],
+      "edits": 1032,
+      "length": 19288
+     },
+     "cer_ws": {
+      "n": 457,
+      "rate": 0.05307788944723618,
+      "ci": [
+       0.04529328242488212,
+       0.06130888040967242
+      ],
+      "edits": 1352,
+      "length": 25472
+     }
+    },
+    "cer_ns": 0.053504769805060144,
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b"
+   },
+   "unproducible_char_lower_bound": {
+    "all": 5.184570717544587e-05,
+    "hangul_only": 5.184570717544587e-05
+   }
+  },
+  "test_h": {
+   "full": {
+    "manifest": "test_h",
+    "mode": "full",
+    "precision": "fp16-autocast",
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "n": 1280,
+    "all": {
+     "cer_ns": {
+      "n": 1280,
+      "rate": 0.15547723160434257,
+      "ci": [
+       0.15089598103830304,
+       0.16023371394791913
+      ],
+      "edits": 8249,
+      "length": 53056
+     },
+     "cer_ws": {
+      "n": 1280,
+      "rate": 0.143376379030189,
+      "ci": [
+       0.1391751360003807,
+       0.1474728131513674
+      ],
+      "edits": 10059,
+      "length": 70158
+     }
+    },
+    "hangul_only": {
+     "cer_ns": {
+      "n": 1280,
+      "rate": 0.15547723160434257,
+      "ci": [
+       0.15089598103830304,
+       0.16023371394791913
+      ],
+      "edits": 8249,
+      "length": 53056
+     },
+     "cer_ws": {
+      "n": 1280,
+      "rate": 0.143376379030189,
+      "ci": [
+       0.1391751360003807,
+       0.1474728131513674
+      ],
+      "edits": 10059,
+      "length": 70158
+     }
+    },
+    "cer_ns": 0.15547723160434257,
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b"
+   },
+   "streaming": {
+    "manifest": "test_h",
+    "mode": "streaming chunk8 left128",
+    "precision": "fp16-autocast",
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "n": 1280,
+    "all": {
+     "cer_ns": {
+      "n": 1280,
+      "rate": 0.18082780458383596,
+      "ci": [
+       0.1756139061418023,
+       0.18548029847146075
+      ],
+      "edits": 9594,
+      "length": 53056
+     },
+     "cer_ws": {
+      "n": 1280,
+      "rate": 0.16814903503520626,
+      "ci": [
+       0.16363621443196638,
+       0.17224004790009828
+      ],
+      "edits": 11797,
+      "length": 70158
+     }
+    },
+    "hangul_only": {
+     "cer_ns": {
+      "n": 1280,
+      "rate": 0.18082780458383596,
+      "ci": [
+       0.1756139061418023,
+       0.18548029847146075
+      ],
+      "edits": 9594,
+      "length": 53056
+     },
+     "cer_ws": {
+      "n": 1280,
+      "rate": 0.16814903503520626,
+      "ci": [
+       0.16363621443196638,
+       0.17224004790009828
+      ],
+      "edits": 11797,
+      "length": 70158
+     }
+    },
+    "cer_ns": 0.18082780458383596,
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b"
+   },
+   "unproducible_char_lower_bound": {
+    "all": 0.0005088962605548854,
+    "hangul_only": 0.0005088962605548854
+   }
+  },
+  "test_fleurs": {
+   "full": {
+    "manifest": "test_fleurs",
+    "mode": "full",
+    "precision": "fp16-autocast",
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "n": 382,
+    "all": {
+     "cer_ns": {
+      "n": 382,
+      "rate": 0.19730738771354225,
+      "ci": [
+       0.1833908179564624,
+       0.20994503416893634
+      ],
+      "edits": 3488,
+      "length": 17678
+     },
+     "cer_ws": {
+      "n": 382,
+      "rate": 0.17827298050139276,
+      "ci": [
+       0.16600423138791767,
+       0.18937933132226017
+      ],
+      "edits": 4096,
+      "length": 22976
+     }
+    },
+    "hangul_only": {
+     "cer_ns": {
+      "n": 257,
+      "rate": 0.14621893178212586,
+      "ci": [
+       0.13465161961042535,
+       0.15886108343644958
+      ],
+      "edits": 1659,
+      "length": 11346
+     },
+     "cer_ws": {
+      "n": 257,
+      "rate": 0.12965210355987056,
+      "ci": [
+       0.11985069168511475,
+       0.14020174842548247
+      ],
+      "edits": 1923,
+      "length": 14832
+     }
+    },
+    "cer_ns": 0.14621893178212586,
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b"
+   },
+   "streaming": {
+    "manifest": "test_fleurs",
+    "mode": "streaming chunk8 left128",
+    "precision": "fp16-autocast",
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "n": 382,
+    "all": {
+     "cer_ns": {
+      "n": 382,
+      "rate": 0.22757099219368707,
+      "ci": [
+       0.2135084855901274,
+       0.2404253869068911
+      ],
+      "edits": 4023,
+      "length": 17678
+     },
+     "cer_ws": {
+      "n": 382,
+      "rate": 0.20704213091922005,
+      "ci": [
+       0.1947197622977124,
+       0.21890517841489196
+      ],
+      "edits": 4757,
+      "length": 22976
+     }
+    },
+    "hangul_only": {
+     "cer_ns": {
+      "n": 257,
+      "rate": 0.1774193548387097,
+      "ci": [
+       0.16587382462234593,
+       0.19072540824822654
+      ],
+      "edits": 2013,
+      "length": 11346
+     },
+     "cer_ws": {
+      "n": 257,
+      "rate": 0.1590480043149946,
+      "ci": [
+       0.14904290357440267,
+       0.17076946457222292
+      ],
+      "edits": 2359,
+      "length": 14832
+     }
+    },
+    "cer_ns": 0.1774193548387097,
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b"
+   },
+   "unproducible_char_lower_bound": {
+    "all": 0.04802579477316438,
+    "hangul_only": 0.0014101886127269522
+   }
+  },
+  "test_cv": {
+   "full": {
+    "manifest": "test_cv",
+    "mode": "full",
+    "precision": "fp16-autocast",
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "n": 472,
+    "all": {
+     "cer_ns": {
+      "n": 472,
+      "rate": 0.2818798848210613,
+      "ci": [
+       0.26619376977070286,
+       0.29642418276914784
+      ],
+      "edits": 2741,
+      "length": 9724
+     },
+     "cer_ws": {
+      "n": 472,
+      "rate": 0.25390686661404893,
+      "ci": [
+       0.2402535117568676,
+       0.26692448939384467
+      ],
+      "edits": 3217,
+      "length": 12670
+     }
+    },
+    "hangul_only": {
+     "cer_ns": {
+      "n": 472,
+      "rate": 0.2818798848210613,
+      "ci": [
+       0.26619376977070286,
+       0.29642418276914784
+      ],
+      "edits": 2741,
+      "length": 9724
+     },
+     "cer_ws": {
+      "n": 472,
+      "rate": 0.25390686661404893,
+      "ci": [
+       0.2402535117568676,
+       0.26692448939384467
+      ],
+      "edits": 3217,
+      "length": 12670
+     }
+    },
+    "cer_ns": 0.2818798848210613,
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b"
+   },
+   "streaming": {
+    "manifest": "test_cv",
+    "mode": "streaming chunk8 left128",
+    "precision": "fp16-autocast",
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "n": 472,
+    "all": {
+     "cer_ns": {
+      "n": 472,
+      "rate": 0.3335047305635541,
+      "ci": [
+       0.31628522023191624,
+       0.34917470492146213
+      ],
+      "edits": 3243,
+      "length": 9724
+     },
+     "cer_ws": {
+      "n": 472,
+      "rate": 0.3007103393843725,
+      "ci": [
+       0.2862690401081374,
+       0.3146315139823852
+      ],
+      "edits": 3810,
+      "length": 12670
+     }
+    },
+    "hangul_only": {
+     "cer_ns": {
+      "n": 472,
+      "rate": 0.3335047305635541,
+      "ci": [
+       0.31628522023191624,
+       0.34917470492146213
+      ],
+      "edits": 3243,
+      "length": 9724
+     },
+     "cer_ws": {
+      "n": 472,
+      "rate": 0.3007103393843725,
+      "ci": [
+       0.2862690401081374,
+       0.3146315139823852
+      ],
+      "edits": 3810,
+      "length": 12670
+     }
+    },
+    "cer_ns": 0.3335047305635541,
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b"
+   },
+   "unproducible_char_lower_bound": {
+    "all": 0.003702180172768408,
+    "hangul_only": 0.003702180172768408
+   }
+  }
+ },
+ "h71": {
+  "zeroth_full_cer_ns": 3.6654914973040236,
+  "anchors": {
+   "whisper-turbo zero-shot": 4.48,
+   "whisper-turbo + LoRA": 1.96
+  },
+  "met": true
+ },
+ "h72": {
+  "fleurs_hangul_only": 14.621893178212586,
+  "fleurs_in_12_30": true,
+  "cv_hangul_only": 28.187988482106128,
+  "cv_in_15_40": true,
+  "test_h_above_official": true
+ },
+ "finished": "2026-10-14 03:18:45"
+}
