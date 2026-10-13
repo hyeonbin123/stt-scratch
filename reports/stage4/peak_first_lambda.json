@@ -1,0 +1,12 @@
+{
+ "checkpoint": "outputs\\stage3\\a\\avg10.pt",
+ "batches": 20,
+ "max_duration": 300.0,
+ "sampler_seed": 0,
+ "conditions": "train mode, SpecAugment, speed perturbation, sampled chunk masks",
+ "mean_ctc_per_utt": 15.393721163028298,
+ "mean_peak_first_per_utt": 950.1026763916016,
+ "target_ratio": 0.1,
+ "lambda": 0.0016202165876947287,
+ "init_sha256": "e79583e93170116cd5d3054713597f4305efe7ba85f5e18b93f6acb6ed3eada3"
+}

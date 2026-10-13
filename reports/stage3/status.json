@@ -15,7 +15,22 @@
   "state": "skipped",
   "reason": "overfitting condition: train/dev_H CER ratio 0.007711729030537642"
  },
- "d": {},
+ "d": {
+  "diverged_attempts": [
+   {
+    "run": "d",
+    "lr": 0.002
+   },
+   {
+    "run": "d-lr0.001",
+    "lr": 0.001
+   }
+  ],
+  "run": "d-lr0.0005",
+  "lr": 0.0005,
+  "actual_hours": 7.791864449381828,
+  "state": "done"
+ },
  "budget": {
   "limit_h": 45.0,
   "used_h": 24.450976886484355,

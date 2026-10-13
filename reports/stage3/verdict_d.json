@@ -1,0 +1,9 @@
+{
+ "d_state": "done",
+ "run": "d-lr0.0005",
+ "gain_pp": -0.19010311653897272,
+ "relative": -0.008620689655172485,
+ "dev_h_guard": false,
+ "adopt": false,
+ "stage4_start": "a"
+}
