@@ -1,0 +1,77 @@
+{
+ "spec": "chunk8 left128",
+ "tail_noise_s": 3.0,
+ "noise_dbfs": -60.0,
+ "baseline_no_endpoint": {
+  "cer_ns": 0.2686214643700674,
+  "upwr": 0.0,
+  "upsr": 0.0,
+  "upwr_strict_trailing": 0.8552479815455594,
+  "upsr_strict_trailing": 0.9957142857142857,
+  "segments": 700
+ },
+ "rule2_0.8_reset": {
+  "cer_ns": 0.2729995967509649,
+  "cer_increase_pp": 0.4378132380897515,
+  "ep50_ms": 904.9998092651368,
+  "ep90_ms": 1064.9998741149905,
+  "ep_n": 633,
+  "upwr": 0.0,
+  "upsr": 0.0,
+  "upwr_strict_trailing": 0.8524613829940811,
+  "upsr_strict_trailing": 0.9931412894375857,
+  "segments": 729
+ },
+ "rule2_1.2_reset": {
+  "cer_ns": 0.27276916873091767,
+  "cer_increase_pp": 0.41477043608502684,
+  "ep50_ms": 1295.0002288818362,
+  "ep90_ms": 1464.9998397827146,
+  "ep_n": 633,
+  "upwr": 0.0,
+  "upsr": 0.0,
+  "upwr_strict_trailing": 0.8530600461893765,
+  "upsr_strict_trailing": 0.9929577464788732,
+  "segments": 710
+ },
+ "rule2_chosen": 1.2,
+ "keep_cache": {
+  "cer_ns": 0.2686214643700674,
+  "reset_cer_ns": 0.27276916873091767,
+  "ep50_ms": 1295.0002288818362,
+  "ep90_ms": 1464.9998397827146,
+  "ep_n": 633,
+  "upwr": 0.0,
+  "upsr": 0.0,
+  "upwr_strict_trailing": 0.8544458855742902,
+  "upsr_strict_trailing": 0.9929577464788732,
+  "segments": 710
+ },
+ "cache_policy": "keep",
+ "chosen": {
+  "rule2_s": 1.2,
+  "cache_policy": "keep",
+  "cer_ns": 0.2686214643700674,
+  "reset_cer_ns": 0.27276916873091767,
+  "ep50_ms": 1295.0002288818362,
+  "ep90_ms": 1464.9998397827146,
+  "ep_n": 633,
+  "upwr": 0.0,
+  "upsr": 0.0,
+  "upwr_strict_trailing": 0.8544458855742902,
+  "upsr_strict_trailing": 0.9929577464788732,
+  "segments": 710
+ },
+ "h63_met": true,
+ "service_vs_measured": {
+  "session_cer_ns": 0.2686214643700674,
+  "real_streaming_cer_ns": 0.2686214643700674,
+  "diff_pp": 0.0,
+  "met": true
+ },
+ "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+ "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+ "device": "cuda",
+ "limit": 0,
+ "seconds": 5857.2
+}

@@ -1,0 +1,19 @@
+{
+ "spec": "chunk8 left128",
+ "dev_h": {
+  "simulated": 0.18761741744249155,
+  "real_streaming": 0.18763829165449003,
+  "diff_pp": 0.0020874211998478387
+ },
+ "dev_mix": {
+  "simulated": 0.26885189239011464,
+  "real_streaming": 0.2686214643700674,
+  "diff_pp": -0.02304280200472464
+ },
+ "h61_met": true,
+ "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+ "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+ "device": "cuda",
+ "limit": 0,
+ "seconds": 2762.6
+}

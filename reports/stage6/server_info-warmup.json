@@ -1,0 +1,1 @@
+{"checkpoint":"D:\\coding\\stt-scratch\\outputs\\stage4\\trimtail\\avg10.pt","chunk_frames":8,"chunk_ms":320,"left_frames":128,"device":"cuda","precision":"fp16-autocast","endpoint":{"blank_threshold":0.8,"rule1_s":2.4,"rule2_s":1.2,"rule3_s":20.0},"reset_cache_on_endpoint":false,"vocab":1288,"warm_up_s":7.74}

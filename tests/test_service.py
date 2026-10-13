@@ -16,7 +16,7 @@ from stt_scratch.model.features import FIRST_PACKET_EXTRA, LogMel, n_mel_frames
 from stt_scratch.model.mask import ChunkSpec
 from stt_scratch.model.subsampling import subsampled_length
 from stt_scratch.service.endpoint import EndpointConfig, Endpointer
-from stt_scratch.service.session import StreamSession
+from stt_scratch.service.session import StreamSession, warm_up
 from stt_scratch.text import Vocab
 
 VOCAB = Vocab(("<blank>", "<unk>", " ", "가", "나", "다", "라", "마"))
@@ -192,3 +192,30 @@ def test_endpoint_closes_segment(reset_cache: bool) -> None:
     # rule3 at 0.32 s fires once per chunk: segments advance even if nothing was decoded
     assert session.segment >= 2
     assert all(e.kind in ("partial", "final", "endpoint") for e in events)
+
+
+def test_warm_up_covers_every_partial_chunk_length_and_leaves_a_fresh_session() -> None:
+    """warm_up flushes each partial last-chunk length 1..31 mel frames once; afterwards the session behaves
+    exactly like a new one (same events, empty stats)."""
+    model = tiny_model()
+    logmel = LogMel()
+    spec = ChunkSpec(8, 64)
+    session = StreamSession(model, VOCAB, spec, logmel, EndpointConfig())
+    fed: list[int] = []
+    original = session.encoder.step
+    session.encoder.step = lambda mel, state: fed.append(mel.shape[0]) or original(mel, state)
+    warm_up(session)
+    session.encoder.step = original
+    assert sorted(n for n in fed if n != 32) == list(range(1, 32))
+    assert session.stats.chunks == 0 and not session.stats.compute_ms and session.segment == 0
+    g = torch.Generator().manual_seed(7)
+    wav = torch.randn(16000 * 2 + 333, generator=g) * 0.05
+
+    def run(s: StreamSession) -> list[tuple]:
+        events = []
+        for i in range(0, wav.numel(), 5120):
+            events.extend(s.push_samples(wav[i : i + 5120]))
+        events.extend(s.flush())
+        return [(e.kind, e.text, e.segment, e.frames, e.rule) for e in events]
+
+    assert run(session) == run(StreamSession(model, VOCAB, spec, logmel, EndpointConfig()))

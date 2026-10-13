@@ -103,8 +103,6 @@ $("start").onclick = async () => {
       $("final").childNodes[0].nodeValue = committed + "\n"; $("partial").textContent = "";
     } else if (m.type === "stats" && m.chunks) {
       $("stats").textContent = `${m.chunks} chunks, p50 ${m.compute_ms_p50.toFixed(1)} ms, p90 ${m.compute_ms_p90.toFixed(1)} ms`;
-    } else if (m.type === "stats" && m.chunks) {
-      $("stats").textContent = `${m.chunks} chunks, p50 ${m.compute_ms_p50.toFixed(1)} ms, p90 ${m.compute_ms_p90.toFixed(1)} ms`;
     }
   };
   ws.onclose = () => { $("status").textContent = "연결 끊김"; };

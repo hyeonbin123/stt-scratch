@@ -1,0 +1,46 @@
+{
+ "utterances": 50,
+ "partial_lag_ms": {
+  "p50": 62.427450029645115,
+  "p90": 63.52959003997967,
+  "max": 121.00720009766519,
+  "n": 1098
+ },
+ "first_partial_s": {
+  "p50": 0.74432399997022,
+  "p90": 1.0786416899762117,
+  "max": 1.3970438000978902,
+  "n": 50
+ },
+ "final_after_last_audio_s": {
+  "p50": 0.24757230002433062,
+  "p90": 0.5457760500023142,
+  "max": 0.756872900063172,
+  "n": 50
+ },
+ "client_wait_after_last_packet_s": {
+  "p50": 0.15178125,
+  "p90": 0.26882500000000004,
+  "max": 0.318125,
+  "n": 50
+ },
+ "flush_round_trip_s": {
+  "p50": 0.073715149957221,
+  "p90": 0.4791010500023142,
+  "max": 0.5235691999383271,
+  "n": 50
+ },
+ "server_compute_ms_p50_median": 60.43587502790615,
+ "server_compute_ms_p90_median": 61.34711999911815,
+ "server_compute_ms_max": 707.5056999456137,
+ "final_rules": {
+  "rule1": 0,
+  "rule2": 0,
+  "rule3": 0,
+  "eos": 50
+ },
+ "cer_ns_hangul_only": 0.16003927344133528,
+ "simulated_hyps": "reports/stage4/hyps/trimtail-avg10-dev_h-chunk8_320ms.jsonl",
+ "same_text_as_simulated": 50,
+ "simulated_cer_ns_hangul_only_same_utts": 0.16003927344133528
+}

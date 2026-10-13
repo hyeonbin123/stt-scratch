@@ -1,0 +1,96 @@
+{
+ "fp16_autocast": {
+  "p50_ms": 60.98840001504868,
+  "p90_ms": 62.758360034786165,
+  "n": 229
+ },
+ "fp32": {
+  "p50_ms": 50.97310000564903,
+  "p90_ms": 52.345739980228245,
+  "n": 229
+ },
+ "profile": {
+  "steps": 20,
+  "wall_ms_per_step_profiled": 103.1587750010658,
+  "cuda_kernels_per_step": 1991.0,
+  "gpu_kernel_ms_per_step": 5.525916949999724,
+  "top_aten_ops": [
+   {
+    "op": "cudaLaunchKernel",
+    "calls_per_step": 1867.0,
+    "cpu_ms_per_step": 30.18069499999941
+   },
+   {
+    "op": "aten::linear",
+    "calls_per_step": 220.0,
+    "cpu_ms_per_step": 29.54073999999998
+   },
+   {
+    "op": "aten::to",
+    "calls_per_step": 448.0,
+    "cpu_ms_per_step": 15.240559999999766
+   },
+   {
+    "op": "aten::_to_copy",
+    "calls_per_step": 387.0,
+    "cpu_ms_per_step": 14.589245000000158
+   },
+   {
+    "op": "aten::copy_",
+    "calls_per_step": 532.6,
+    "cpu_ms_per_step": 13.36979000000091
+   },
+   {
+    "op": "aten::layer_norm",
+    "calls_per_step": 137.0,
+    "cpu_ms_per_step": 12.356769999999933
+   },
+   {
+    "op": "aten::add",
+    "calls_per_step": 276.0,
+    "cpu_ms_per_step": 7.458794999999824
+   },
+   {
+    "op": "aten::addmm",
+    "calls_per_step": 110.0,
+    "cpu_ms_per_step": 7.140864999999836
+   },
+   {
+    "op": "aten::mul",
+    "calls_per_step": 216.0,
+    "cpu_ms_per_step": 6.461324999999912
+   },
+   {
+    "op": "aten::masked_fill",
+    "calls_per_step": 84.0,
+    "cpu_ms_per_step": 6.398710000000187
+   },
+   {
+    "op": "aten::native_layer_norm",
+    "calls_per_step": 96.0,
+    "cpu_ms_per_step": 5.993390000000098
+   },
+   {
+    "op": "aten::clone",
+    "calls_per_step": 145.0,
+    "cpu_ms_per_step": 5.56333500000011
+   },
+   {
+    "op": "aten::scaled_dot_product_attention",
+    "calls_per_step": 24.0,
+    "cpu_ms_per_step": 5.301390000000013
+   },
+   {
+    "op": "aten::cat",
+    "calls_per_step": 110.0,
+    "cpu_ms_per_step": 3.366414999999988
+   },
+   {
+    "op": "aten::arange",
+    "calls_per_step": 98.0,
+    "cpu_ms_per_step": 3.208014999999983
+   }
+  ]
+ },
+ "aten_top_level_calls_hint": 63784
+}

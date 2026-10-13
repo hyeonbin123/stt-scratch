@@ -18,7 +18,7 @@ import torch
 
 from stt_scratch.model.conformer import ChunkConformerCTC
 from stt_scratch.model.decode import GreedyState
-from stt_scratch.model.features import N_MELS, LogMel, StreamingFbank
+from stt_scratch.model.features import FIRST_PACKET_EXTRA, HOP, N_MELS, LogMel, StreamingFbank
 from stt_scratch.model.mask import ChunkSpec
 from stt_scratch.model.streaming import StreamingEncoder
 from stt_scratch.service.endpoint import EndpointConfig, Endpointer
@@ -165,3 +165,20 @@ class StreamSession:
         self._new_segment(reset_cache=True)
         self.fbank.reset()
         return events
+
+
+def warm_up(session: StreamSession) -> float:
+    """Flush once for every possible length of a partial last chunk (1 .. 4*chunk-1 mel frames) so that
+    no client pays the one-time setup of a new tensor shape: on the RTX 2080 Ti the first flush with a
+    new encoder-frame count took about 0.47 s instead of 0.06 s. Leaves the session fresh; returns the
+    seconds spent."""
+    t0 = time.perf_counter()
+    g = torch.Generator().manual_seed(0)
+    first = FIRST_PACKET_EXTRA + session.mel_per_chunk * HOP  # one whole chunk
+    for m in range(1, session.mel_per_chunk):
+        n = first + m * HOP
+        session.push_samples((torch.randn(n, generator=g) * 1e-3).to(session.device))
+        session.flush()
+    session.stats = SessionStats()
+    session.segment = 0
+    return time.perf_counter() - t0
