@@ -191,4 +191,4 @@ def test_endpoint_closes_segment(reset_cache: bool) -> None:
         events.extend(session.push_samples(wav[i : i + 5120]))
     # rule3 at 0.32 s fires once per chunk: segments advance even if nothing was decoded
     assert session.segment >= 2
-    assert all(e.kind in ("partial", "final") for e in events)
+    assert all(e.kind in ("partial", "final", "endpoint") for e in events)

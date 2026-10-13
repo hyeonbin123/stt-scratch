@@ -46,7 +46,6 @@ async def stream_one(url: str, pcm: np.ndarray, realtime: bool) -> dict:
             sent_t.append(time.perf_counter() - t_start)
             if realtime:
                 await asyncio.sleep(len(piece) / 16000)
-        t_last_audio = time.perf_counter() - t_start
         await ws.send("flush")
         deadline = time.perf_counter() + 5.0  # the server answers flush with the events, then "stats"
         while time.perf_counter() < deadline and not any(e["type"] == "stats" for e in events):
@@ -72,7 +71,7 @@ async def stream_one(url: str, pcm: np.ndarray, realtime: bool) -> dict:
         "rules": [e["rule"] for e in finals],
         "first_partial_s": first_partial,
         "partial_lag_ms": lags,
-        "final_after_last_audio_s": (last_final - t_last_audio) if last_final else None,
+        "final_after_last_audio_s": (last_final - sent_t[-1]) if last_final and sent_t else None,
         "chunks": stats.get("chunks"),
         "compute_ms_p50": stats.get("compute_ms_p50"),  # per encoder chunk, from the server (H6.2)
         "compute_ms_p90": stats.get("compute_ms_p90"),

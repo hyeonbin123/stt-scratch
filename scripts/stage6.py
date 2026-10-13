@@ -74,7 +74,11 @@ def time_steps(model, utts, store, spec, device, amp: bool) -> dict:
         mel, _ = logmel(wav[None], torch.tensor([wav.numel()], device=device))
         state = enc.new_state()
         step = 4 * spec.chunk_size
-        for i in range(0, mel.shape[1] - step + 1, step):
+        for i in range(
+            0, mel.shape[1], step
+        ):  # includes the partial last chunk (RTF over the whole utterance)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
             t0 = time.perf_counter()
             with autocast(device, amp):
                 enc.step(mel[0, i : i + step], state)
@@ -184,8 +188,9 @@ def run_sessions(
             for ev in session.push_samples(piece):
                 if ev.kind == "partial":
                     partials_by_segment.setdefault(ev.segment, []).append(ev.text)
-                elif ev.kind == "final":
-                    finals.append(ev)
+                elif ev.kind in ("final", "endpoint"):
+                    if ev.kind == "final":
+                        finals.append(ev)
                     first_endpoint.setdefault(u.id, (pos + piece.numel()) / SR)
         for ev in session.flush():
             finals.append(ev)
@@ -199,11 +204,11 @@ def stability(partial_runs) -> dict:
     """UPWR: complete words of partials (all but a trailing unfinished word) that differ from the final
     word at the same position, over final words; UPSR: segments with any such word. 'strict' also counts
     the trailing word whenever it is not yet the final word (an append-only decoder only extends it)."""
-    unstable = strict = final_words = bad_segments = 0
+    unstable = strict = final_words = bad_segments = bad_strict = 0
     for partials, final in partial_runs:
         fw = final.split()
         final_words += len(fw)
-        seg_bad = False
+        seg_bad = seg_strict = False
         for p in partials:
             words = p.split()
             complete = words if p.endswith(" ") else words[:-1]
@@ -215,11 +220,14 @@ def stability(partial_runs) -> dict:
                 i = len(words) - 1
                 if i >= len(fw) or fw[i] != words[-1]:
                     strict += 1
+                    seg_strict = True
         bad_segments += seg_bad
+        bad_strict += seg_bad or seg_strict
     return {
         "upwr": unstable / max(1, final_words),
         "upsr": bad_segments / max(1, len(partial_runs)),
         "upwr_strict_trailing": (unstable + strict) / max(1, final_words),
+        "upsr_strict_trailing": bad_strict / max(1, len(partial_runs)),
         "segments": len(partial_runs),
     }
 
@@ -261,14 +269,34 @@ def cmd_session(args, model, vocab, device) -> dict:
     ok = [r for r in (0.8, 1.2) if out[f"rule2_{r}_reset"]["cer_increase_pp"] <= 0.2]
     chosen = min(ok) if ok else 1.2
     out["rule2_chosen"] = chosen
-    hyps, _, _ = run_sessions(
+    hyps, keep_ep, keep_partials = run_sessions(
         model, vocab, spec, utts, store, EndpointConfig(rule2_s=chosen), False, device, args.tail_s
     )
     keep = rate(score(utts, hyps))
     reset = out[f"rule2_{chosen}_reset"]["cer_ns"]
-    out["keep_cache"] = {"cer_ns": keep, "reset_cer_ns": reset}
+    keep_delays = [keep_ep[u] - ends[u] for u in keep_ep if u in ends]
+    out["keep_cache"] = {
+        "cer_ns": keep,
+        "reset_cer_ns": reset,
+        "ep50_ms": float(np.percentile(keep_delays, 50) * 1000) if keep_delays else None,
+        "ep90_ms": float(np.percentile(keep_delays, 90) * 1000) if keep_delays else None,
+        "ep_n": len(keep_delays),
+        **stability(keep_partials),
+    }
     out["cache_policy"] = "keep" if keep < reset else "reset"
-    out["h63_met"] = out[f"rule2_{chosen}_reset"]["upwr"] == 0 and out["baseline_no_endpoint"]["upwr"] == 0
+    chosen_metrics = out["keep_cache"] if out["cache_policy"] == "keep" else out[f"rule2_{chosen}_reset"]
+    out["chosen"] = {"rule2_s": chosen, "cache_policy": out["cache_policy"], **chosen_metrics}
+    out["h63_met"] = chosen_metrics["upwr"] == 0 and out["baseline_no_endpoint"]["upwr"] == 0
+    # service path CER (no-endpoint session) vs the measured real-streaming CER on dev_mix (rule: within 0.1)
+    h61 = ROOT / "reports" / "stage6" / "h61.json"
+    if h61.exists() and not args.limit:
+        real = json.loads(h61.read_text(encoding="utf-8"))["dev_mix"]["real_streaming"]
+        out["service_vs_measured"] = {
+            "session_cer_ns": base,
+            "real_streaming_cer_ns": real,
+            "diff_pp": (base - real) * 100,
+            "met": abs(base - real) * 100 <= 0.1,
+        }
     return out
 
 
@@ -335,7 +363,18 @@ def main(argv: list[str] | None = None) -> None:
     result = {"grid": cmd_grid, "h61": cmd_h61, "session": cmd_session, "drift": cmd_drift}[args.command](
         args, model, vocab, device
     )
-    result.update({"checkpoint": args.checkpoint, "seconds": round(time.perf_counter() - t0, 1)})
+    import hashlib
+
+    result.update(
+        {
+            "checkpoint": args.checkpoint,
+            "checkpoint_sha256": hashlib.sha256((ROOT / args.checkpoint).read_bytes()).hexdigest(),
+            "device": str(device),
+            "spec": f"chunk{args.chunk} left{args.left}",
+            "limit": args.limit,
+            "seconds": round(time.perf_counter() - t0, 1),
+        }
+    )
     out = ROOT / "reports" / "stage6"
     out.mkdir(parents=True, exist_ok=True)
     name = args.name or args.command

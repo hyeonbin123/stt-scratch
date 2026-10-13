@@ -114,7 +114,10 @@ class StreamSession:
         return events
 
     def _step(self, mel: torch.Tensor) -> tuple[torch.Tensor, float]:
-        """One encoder step under the session precision; returns (log_probs, wall ms incl. GPU sync)."""
+        """One encoder step under the session precision; returns (log_probs, encoder ms). The GPU is
+        synchronized before and after, so queued feature work is not counted as encoder time."""
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         with self._autocast():
             log_probs = self.encoder.step(mel, self.state)
@@ -135,6 +138,8 @@ class StreamSession:
         if rule is not None:
             if text.strip():
                 events.append(Event("final", text, self.segment, self.segment_frames, rule, ms))
+            else:  # an endpoint that closes an empty segment (e.g. leading silence); clients may ignore it
+                events.append(Event("endpoint", "", self.segment, self.segment_frames, rule, ms))
             self.segment += 1
             self._new_segment(reset_cache=self.reset_cache_on_endpoint)
         elif new or self.frames_since_partial >= self.partial_interval_frames:
