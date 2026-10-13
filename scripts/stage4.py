@@ -85,7 +85,7 @@ def fresh(path: Path, init_sha: str) -> bool:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--start", default="runA", help="runA or a finished Stage 3 arm (a, b, d)")
+    p.add_argument("--start", required=True, help="runA or a finished Stage 3 arm (a, b, d); rule change 22")
     args = p.parse_args()
     py = sys.executable
     init, model_args = start_model(args.start)
@@ -96,7 +96,8 @@ def main() -> None:
     log = ROOT / "work" / "stage4.log"
 
     lam_path = rep / "peak_first_lambda.json"
-    if not fresh(lam_path, init_sha):
+    lambda_was_fresh = fresh(lam_path, init_sha)
+    if not lambda_was_fresh:
         cmd = [py, "scripts/calibrate_peak_first.py", "--checkpoint", init_rel]
         if "--max-duration" in model_args:
             cmd += ["--max-duration", model_args[model_args.index("--max-duration") + 1]]
@@ -113,17 +114,43 @@ def main() -> None:
     }
     summary = {"start": args.start, "init": init_rel, "init_sha256": init_sha, "lambda": lam, "variants": {}}
     sys.path.insert(0, str(ROOT / "src"))
-    from stt_scratch.train import completed_epochs
+    from stt_scratch.train import RECIPE_KEYS, build_parser, completed_epochs, expected_recipe
+
+    def check_existing(run: Path, argv: list[str]) -> None:
+        """An existing run is reused or resumed only if it was trained from this very starting checkpoint
+        (sidecar SHA-256, or for runs started before the sidecar existed: the lambda file of this start model
+        was not regenerated) and its recorded recipe equals the registered one."""
+        meta = run / "meta.json"
+        if not meta.exists():
+            if any(run.glob("*.pt")):
+                raise SystemExit(f"{run} has checkpoints but no meta.json")
+            return
+        sidecar = run / "init_sha256.txt"
+        if sidecar.exists():
+            if sidecar.read_text(encoding="utf-8").strip() != init_sha:
+                raise SystemExit(f"{run} was trained from a different starting checkpoint")
+        elif not lambda_was_fresh:
+            raise SystemExit(f"{run} predates the current starting checkpoint; move it away first")
+        recorded = json.loads(meta.read_text(encoding="utf-8"))["args"]
+        parser, want = build_parser(), expected_recipe(argv)
+        diff = {
+            k: (recorded.get(k, parser.get_default(k)), want[k])
+            for k in RECIPE_KEYS
+            if recorded.get(k, parser.get_default(k)) != want[k]
+            and not (isinstance(want[k], float) and float(recorded.get(k, 0) or 0) == want[k])
+        }
+        if diff:
+            raise SystemExit(f"{run} holds a run with a different recipe: {diff}")
 
     for name, extra in variants.items():
         run = out_root / name
-        meta = run / "meta.json"
-        if meta.exists() and json.loads(meta.read_text(encoding="utf-8"))["args"].get("init") != init_rel:
-            raise SystemExit(f"{run} was started from another model; move it away first")
+        argv = ["--run", str(run.relative_to(ROOT)), *RECIPE, *model_args, *extra, "--init", init_rel]
+        check_existing(run, argv)
         if completed_epochs(run) < 15:
             resume = ["--resume"] if (run / "last.pt").exists() else []
-            cmd = [py, "-m", "stt_scratch.train", "--run", str(run.relative_to(ROOT)), *RECIPE, *model_args,
-                   *extra, "--init", init_rel, *resume]  # fmt: skip
+            run.mkdir(parents=True, exist_ok=True)
+            (run / "init_sha256.txt").write_text(init_sha + "\n", encoding="utf-8")
+            cmd = [py, "-m", "stt_scratch.train", *argv, *resume]
             if sh(cmd, log) != 0 or completed_epochs(run) < 15:
                 raise SystemExit(f"variant {name} did not finish")
         avg = run / "avg10.pt"

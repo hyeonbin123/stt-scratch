@@ -99,7 +99,8 @@ def recipe_matches(run: Path, argv: list[str]) -> tuple[bool, dict]:
     """Compare the run's recorded recipe (meta.json args; keys added later count as defaults) with argv's."""
     meta = run / "meta.json"
     if not meta.exists():
-        return True, {}
+        has_ckpt = run.exists() and any(run.glob("*.pt"))
+        return (not has_ckpt), ({"meta.json": ("missing", "required")} if has_ckpt else {})
     recorded = json.loads(meta.read_text(encoding="utf-8"))["args"]
     parser = build_parser()
     want = expected_recipe(argv)
@@ -318,14 +319,27 @@ def main() -> None:
     if "c" in requested and status["c"].get("state") != "done" and (ratio is None or ratio < 0.5):
         status["c"] = {"state": "skipped", "reason": f"overfitting condition: train/dev_H CER ratio {ratio}"}
     save()
+
+    def used_hours() -> float:
+        """Actual hours of every run this stage started, including the diverged attempts."""
+        runs = set()
+        for s in status.values():
+            if isinstance(s, dict):
+                if s.get("run"):
+                    runs.add(s["run"])
+                runs.update(a["run"] for a in s.get("diverged_attempts", []))
+        return sum(actual_hours(ROOT / "outputs" / "stage3" / r) for r in runs)
+
     for arm in requested:
-        if status[arm].get("state") in ("done", "skipped", "failed"):
+        if status[arm].get("state") == "done":
+            run = ROOT / "outputs" / "stage3" / status[arm]["run"]
+            ok, diff = recipe_matches(run, arm_argv(arm, run, status[arm]["lr"]))
+            if not ok or completed_epochs(run) < ARMS[arm]["epochs"]:
+                raise SystemExit(f"arm {arm} is marked done but {run} does not match: {diff}")
             continue
-        used = sum(
-            actual_hours(ROOT / "outputs" / "stage3" / s["run"])
-            for s in status.values()
-            if isinstance(s, dict) and s.get("run") and s.get("state") in ("done", "failed")
-        )
+        if status[arm].get("state") in ("skipped", "failed"):
+            continue
+        used = used_hours()
         pending = [a for a in requested if status[a].get("state") not in ("done", "skipped", "failed")]
         while pending:
             estimate = sum(estimate_hours(a, ref_epoch_h) for a in pending)
@@ -363,6 +377,8 @@ def main() -> None:
         status[arm]["state"] = "done"
         save()
         print(f"arm {arm} done ({run.name})", flush=True)
+    status["budget"] = {"limit_h": args.budget_hours, "used_h": used_hours(), "ref_epoch_h": ref_epoch_h}
+    save()
 
 
 if __name__ == "__main__":

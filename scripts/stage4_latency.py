@@ -1,7 +1,8 @@
 """Stage 4 emission latency (docs/experiments.md 4단계, rule change 18) against MFA Korean 3.0 alignments.
 
-For each checkpoint and simulated chunk size: greedy decoding under the chunk mask (identical to cache
-streaming), the emission frame of every token (first frame of its CTC run) and its availability time
+For each checkpoint and simulated chunk size: greedy decoding under the chunk mask (simulated streaming;
+cache streaming matches it up to fp16 rounding, 99.99 % frame argmax agreement in Stage 2), the emission
+frame of every token (first frame of its CTC run) and its availability time
     t_emit = min(((4 C (k + 1) - 1) * 160 + 400) / 16000, duration),  k = frame // C
 (the audio of the whole chunk must have arrived; compute time excluded). Reference: MFA word intervals
 regrouped into the transcript's space-separated words (MFA splits Korean words into morphemes).
