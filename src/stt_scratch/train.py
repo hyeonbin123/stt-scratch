@@ -1,16 +1,30 @@
-"""Training loop: fp16 autocast, fp32 CTC, dynamic chunk training, warmup+cosine, per-epoch dev CER and loss.
+"""학습 루프: fp16 autocast, fp32 CTC, 동적 청크 학습, warmup+cosine, epoch마다 dev CER과 dev 손실.
 
-Usage (see docs/experiments.md for the pre-registered settings):
+사용법(사전 등록 설정은 docs/experiments.md 참고):
   uv run python -m stt_scratch.train --run outputs/stage2/runA --epochs 100 --lr 1e-3 --seed 1
 
-Counters in the logs: `step` = optimizer step attempts (the LR schedule, budgets and "same step count" rule
-run on it); `updates` = attempts the GradScaler did not skip; `skipped` = skipped attempts plus non-finite
-losses. Divergence (docs/experiments.md "fp16 규칙"): >= 3 non-finite losses, scale < 1 for 100 steps, or the
-dev CTC loss after epoch 3 not below the value after epoch 1. A diverged run stops and keeps last.pt.
+로그의 카운터: `step` = 옵티마이저 step 시도 횟수(LR 스케줄, 예산, '같은 step 수' 규칙이 이 값을 기준으로
+돈다), `updates` = GradScaler가 건너뛰지 않은 시도, `skipped` = 건너뛴 시도 + 비유한 손실. 발산
+(docs/experiments.md "fp16 규칙"): 비유한 손실 누적 3회 이상, scale < 1이 100 step 연속, 또는 epoch 3 끝의
+dev CTC 손실이 epoch 1 끝 값보다 낮지 않음. 발산한 런은 멈추고 last.pt를 남긴다.
 """
+
+# [파일 역할] 모든 단계(1단계 LR 선택, 2단계 주 모델, 3단계 비교군, 4단계 이어 학습)가 공유하는 학습 진입점.
+# 한 번 실행이 런 디렉터리 하나(--run)를 만들고 meta.json, train.jsonl(step 로그), epochs.jsonl(epoch 요약·dev
+# 결과), epoch-NNN.pt·last.pt(체크포인트)를 남긴다.
+# [흐름] 인자 파싱 → 데이터·모델·옵티마이저 준비 → (--resume면 체크포인트·처방 대조·로그 정리, --init이면
+# 가중치만 이어받기) → meta 기록 → epoch 루프[배치마다: GPU 속도 교란·log-mel → SpecAugment 커리큘럼 판단 →
+# 동적 청크 설정 → LR 스케줄 → (TrimTail·CR-CTC 변형) → fp16 autocast forward·손실 → GradScaler
+# backward·clip·step → 발산 카운터 → 로그] → epoch 끝 dev CER·dev CTC 손실 → dev 손실 발산 규칙 → 체크포인트.
+# [설계 이유] 사전 등록 규칙(docs/experiments.md "fp16 규칙"과 규칙 변경 1~3, 10, 13, 15, 16)을 사람이 지키는
+# 절차가 아니라 코드로 강제한다: 발산 판정, 재개 조건, 처방 대조, step 정의가 모두 여기 있다.
+# [연결] scripts/stage1_sweep.py·stage3.py·stage4.py가 이 모듈을 하위 프로세스로 돌리고, stage3·stage4는
+# build_parser·expected_recipe·completed_epochs로 기존 런을 대조한다.
 
 from __future__ import annotations
 
+# 표준 라이브러리 중 subprocess는 meta.json에 git 커밋 해시를 남기려고, os는 PYTORCH_CUDA_ALLOC_CONF 설정을
+# 기록하려고, random은 속도 교란·동적 청크·TrimTail용 시드 고정 난수에 쓴다.
 import argparse
 import json
 import math
@@ -22,6 +36,8 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
+# 프로젝트 모듈: 데이터 입력(data), 매 epoch dev 평가·dev 손실(evaluate), 모델·설정, 손실 함수(ctc),
+# 특징·증강(features), 청크 설정(mask), 어휘·CTC 최소 프레임(text).
 import torch
 from torch import nn
 
@@ -34,11 +50,15 @@ from stt_scratch.model.features import LogMel, speed_perturb, trim_tail
 from stt_scratch.model.mask import ChunkSpec, sample_chunk_spec
 from stt_scratch.text import Vocab, ctc_min_frames
 
+# ROOT: 저장소 루트(--run, manifests/, data/pcm/의 기준). SPEEDS: 속도 교란 배율 세 가지(발화마다 하나를
+# 고른다). COUNTERS: 발산 판정·보고에 쓰는 누적 카운터로, 체크포인트에 저장되어 재개 뒤에도 이어진다.
 ROOT = Path(__file__).resolve().parents[2]
 SPEEDS = (0.9, 1.0, 1.1)
 COUNTERS = ("nan_count", "low_scale_streak", "skipped", "updates")
-# Arguments that define the training recipe. They are stored in every checkpoint and a --resume must match
-# them (docs/experiments.md rule change 15); pass --allow-recipe-change to override deliberately.
+# 처방(recipe) 키: 학습 결과를 바꾸는 인자 목록. 체크포인트마다 저장해 --resume가 다른 처방으로 이어 학습하는
+# 실수를 막고(규칙 변경 15), 3·4단계 실행기가 기존 런을 다시 쓰기 전에 등록 처방과 대조할 때 쓴다(규칙 변경
+# 19, 23). --run, --resume, --cuda-memory-fraction, --log-every처럼 결과를 바꾸지 않는 인자는 넣지 않는다.
+# --resume는 저장된 처방과 같아야 하며, 일부러 바꿀 때는 --allow-recipe-change를 명시한다.
 RECIPE_KEYS = (
     "train",
     "lr",
@@ -76,6 +96,7 @@ RECIPE_KEYS = (
 )
 
 
+# meta.json에 남길 현재 코드 버전(짧은 커밋 해시). git이 없거나 저장소 밖이면 "unknown".
 def git_commit() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True).strip()
@@ -83,6 +104,10 @@ def git_commit() -> str:
         return "unknown"
 
 
+# 명령행 인자와 manifests/mel_stats.json(전역 정규화 통계)으로 ModelConfig를 채워 모델을 만든다.
+# --offline-only(2단계 통제군 Run B)면 config의 full_context_prob를 0.0으로 기록하지만, 이 경우 학습 루프가
+# sample_chunk_spec을 부르지 않고 항상 ChunkSpec(0, -1)(전체 문맥)을 쓰므로 실제 학습에는 영향이 없다(기록된
+# 값의 뜻은 '전체 문맥 확률 0'이라 실제 동작과 반대이니 config를 읽을 때 주의).
 def build_model(vocab: Vocab, args: argparse.Namespace) -> tuple[ChunkConformerCTC, ModelConfig]:
     stats = json.loads((ROOT / "manifests" / "mel_stats.json").read_text(encoding="utf-8"))
     cfg = ModelConfig(
@@ -107,6 +132,9 @@ def build_model(vocab: Vocab, args: argparse.Namespace) -> tuple[ChunkConformerC
     return ChunkConformerCTC(cfg), cfg
 
 
+# 학습률 스케줄: warmup step 동안 peak까지 선형 증가, 그 뒤 total까지 cosine으로 floor(1e-5)까지 감소.
+# warmup은 2,000 step(규칙 변경 1, 원래 4,000). total은 --schedule-steps(1단계는 2단계와 같은 69,700 step을
+# 넘겨 5 epoch만 도는 '잘린 복사본'이 되게 함, 규칙 변경 13)이고 없으면 epochs × epoch당 step이다.
 def lr_at(step: int, total: int, warmup: int, peak: float, floor: float = 1e-5) -> float:
     if step < warmup:
         return peak * (step + 1) / warmup
@@ -114,6 +142,9 @@ def lr_at(step: int, total: int, warmup: int, peak: float, floor: float = 1e-5) 
     return floor + (peak - floor) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
+# collate가 넘긴 파형 목록으로 학습 입력을 만든다: 파형을 GPU로 옮기고, perturb면 발화마다 SPEEDS 중 하나로
+# 속도 교란, 0으로 패딩해 LogMel. 정답은 이어 붙인 1차원 int32 토큰과 발화별 길이로 만든다(ctc_loss가 다시 (B,
+# S)로 펼친다).
 def prepare_batch(batch: dict, logmel: LogMel, device: torch.device, rng: random.Random, perturb: bool):
     wavs = []
     for wav in batch["wavs"]:
@@ -132,6 +163,8 @@ def prepare_batch(batch: dict, logmel: LogMel, device: torch.device, rng: random
     return mel, frames, targets, target_lengths
 
 
+# 재개용 난수 상태 묶음: Python random(속도 교란·청크·TrimTail), torch CPU(SpecAugment 등), CUDA. 체크포인트에
+# 넣어 재개한 런이 멈추지 않은 런과 같은 난수 흐름을 잇게 한다(규칙 변경 10).
 def rng_states(rng: random.Random, device: torch.device) -> dict:
     states = {"python": rng.getstate(), "torch_cpu": torch.get_rng_state()}
     if device.type == "cuda":
@@ -139,16 +172,20 @@ def rng_states(rng: random.Random, device: torch.device) -> dict:
     return states
 
 
+# 저장한 난수 상태를 되돌린다. Python 상태의 내부 값은 random.setstate가 요구하는 튜플로 바꿔 넣고,
+# torch.load의 map_location이 상태 바이트 텐서를 GPU로 옮기면 set_rng_state가 실패하므로 .cpu()로
+# 되돌린다(docs/ai-verification.md).
 def restore_rng(states: dict, rng: random.Random, device: torch.device) -> None:
     version, internal, gauss = states["python"]
     rng.setstate((version, tuple(internal), gauss))
-    torch.set_rng_state(states["torch_cpu"].cpu())  # map_location may have moved the state tensors
+    torch.set_rng_state(states["torch_cpu"].cpu())
     if device.type == "cuda" and "torch_cuda" in states:
         torch.cuda.set_rng_state(states["torch_cuda"].cpu(), device)
 
 
+# 같은 epoch에서 두 번 재개해도 이전 재개 기록이 남는다.
 def unique_path(path: Path) -> Path:
-    """path, or path with -2, -3, ... before the suffix when it already exists (never overwrite records)."""
+    """path를 돌려주되, 이미 있으면 확장자 앞에 -2, -3, …을 붙인 새 경로를 준다(기록을 덮어쓰지 않는다)."""
     n = 2
     candidate = path
     while candidate.exists():
@@ -157,6 +194,9 @@ def unique_path(path: Path) -> Path:
     return candidate
 
 
+# 체크포인트 한 개를 쓴다. 가중치뿐 아니라 옵티마이저·GradScaler 상태, epoch·step, config, 카운터, dev 손실
+# 이력, 난수 상태, 처방, dev 손실 규칙 적용 여부까지 넣어 재개가 '멈추지 않은 것과 같은 학습'이 되게 한다.
+# epoch_complete=False(발산·--max-steps로 epoch 도중 멈춤)인 체크포인트는 재개를 거부하는 표시다.
 def save_checkpoint(
     path: Path,
     model,
@@ -194,13 +234,18 @@ def save_checkpoint(
     )
 
 
+# main뿐 아니라 3·4단계 실행기가 같은 파서로 '이 명령이면 어떤 처방이 기록될지'를 계산하므로(expected_recipe)
+# 함수로 분리했다.
 def build_parser() -> argparse.ArgumentParser:
-    """All training options; the runners use it to compute the expected recipe of an arm."""
+    """학습 인자 전체를 정의한다. 실행기는 이 파서로 후보의 기대 처방을 계산한다."""
     p = argparse.ArgumentParser()
     p.add_argument("--run", required=True)
     p.add_argument("--train", default="train")
     p.add_argument("--devs", default="dev_mix,dev_h")
-    p.add_argument("--dev-loss-set", default="dev_mix", help="manifest for the dev CTC loss divergence check")
+    p.add_argument("--dev-loss-set", default="dev_mix", help="dev CTC 손실 발산 검사에 쓸 매니페스트")
+    # 기본값의 근거: 100 epoch과 max-duration 300 s는 0단계 예산 규칙 판정(epoch 약 7.8분 → 100 epoch ≈ 13 h,
+    # 14 h 안), 피크 메모리 4.31 GB(docs/experiments.md 0단계 결과). 실제 채택 peak LR은 1단계 판정의 2e-3이라
+    # 실행 때 --lr 2e-3을 넘긴다(README 명령).
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--max-duration", type=float, default=300.0)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -209,98 +254,101 @@ def build_parser() -> argparse.ArgumentParser:
         "--schedule-steps",
         type=int,
         default=0,
-        help="total steps of the warmup+cosine schedule; 0 = epochs x steps/epoch. Stage 1 runs pass the "
-        "Stage 2 total so that the short run is a truncated copy of the long schedule",
+        help="warmup+cosine 스케줄의 전체 step 수. 0 = epoch 수 × epoch당 step. 1단계 런은 2단계 전체 "
+        "값을 넘겨, 짧은 런이 긴 스케줄의 앞부분을 잘라 낸 복사본이 되게 한다",
     )
     p.add_argument(
         "--dev-loss-rule",
         default="1,3",
-        help="A,B (1-based epochs): divergence when the dev CTC loss after epoch B is not below the value "
-        "after epoch A (docs/experiments.md fp16 rule, rule change 3/13); skipped with --init",
+        help="A,B(1부터 센 epoch): epoch B 끝의 dev CTC 손실이 epoch A 끝 값보다 낮지 않으면 발산"
+        "(docs/experiments.md fp16 규칙, 규칙 변경 3/13). --init이면 검사하지 않는다",
     )
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--d-model", type=int, default=256)
     p.add_argument("--n-layers", type=int, default=12)
     p.add_argument("--ffn-dim", type=int, default=1024)
+    # 중간 CTC 헤드 기본값은 Run A의 자기조건 CTC. 3단계 (a)와 최종 모델은 --sc-layers 6 --sc-weight 0.3
+    # --no-sc-feedback(InterCTC 단독)이다.
     p.add_argument("--sc-layers", default="3,6,9")
     p.add_argument("--sc-weight", type=float, default=0.5)
     p.add_argument(
-        "--no-sc-feedback", action="store_true", help="InterCTC only: intermediate losses, no feedback"
+        "--no-sc-feedback", action="store_true", help="InterCTC 단독: 중간 손실만 두고 피드백은 끈다"
     )
     p.add_argument("--no-bacon", action="store_true")
-    p.add_argument("--no-qk-norm", action="store_true", help="drop the per-head LayerNorm on q and k")
+    p.add_argument("--no-qk-norm", action="store_true", help="q와 k의 헤드별 LayerNorm(QK-norm)을 뺀다")
     p.add_argument("--block", default="conformer", choices=["conformer", "ebranchformer"])
-    p.add_argument(
-        "--cgmlp-units", type=int, default=1024, help="E-Branchformer cgMLP width (before the split)"
-    )
+    p.add_argument("--cgmlp-units", type=int, default=1024, help="E-Branchformer cgMLP 폭(둘로 나누기 전)")
     p.add_argument("--cgmlp-kernel", type=int, default=31)
     p.add_argument("--merge-kernel", type=int, default=31)
-    p.add_argument("--time-masks", type=int, default=5, help="SpecAugment time masks per utterance")
+    p.add_argument("--time-masks", type=int, default=5, help="발화당 SpecAugment 시간 마스크 개수")
     p.add_argument(
-        "--trimtail-ms", type=int, default=0, help="TrimTail: drop U{0..N} ms of trailing audio (0 = off)"
+        "--trimtail-ms", type=int, default=0, help="TrimTail: 발화 끝 음성을 U{0..N} ms 잘라 낸다(0 = 끔)"
     )
-    p.add_argument(
-        "--peak-first-lambda", type=float, default=0.0, help="Peak-First regularization weight (0 = off)"
-    )
+    p.add_argument("--peak-first-lambda", type=float, default=0.0, help="Peak-First 정규화 가중치(0 = 끔)")
     p.add_argument(
         "--cr-ctc-alpha",
         type=float,
         default=0.0,
-        help="CR-CTC consistency weight (0 = off); each batch is duplicated into two augmented views",
+        help="CR-CTC 일관성 가중치(0 = 끔). 배치마다 같은 배치를 두 번 이어 붙여 증강한 두 뷰를 만든다",
     )
     p.add_argument(
-        "--offline-only", action="store_true", help="control run: full context only, no chunk masks"
+        "--offline-only", action="store_true", help="통제 런: 청크 마스크 없이 항상 전체 문맥으로 학습한다"
     )
     p.add_argument("--no-perturb", action="store_true")
     p.add_argument("--no-augment", action="store_true")
+    # SpecAugment·속도 교란 시작 시점. 처음부터 SpecAugment를 걸면 CTC 정렬이 시작되지 않아 기본값을 epoch
+    # 3으로 둔다(규칙 변경 13). 배치 규칙이 다른 3단계 (d)는 같은 step(2,091)에 켜도록 --augment-start-step을
+    # 쓰고(규칙 변경 15), 이미 정렬된 모델을 이어 학습하는 4단계는 둘 다 0으로 처음부터 켠다(규칙 변경 16).
     p.add_argument(
         "--augment-start-epoch",
         type=int,
         default=3,
-        help="SpecAugment is off before this epoch (0-based); the CTC alignment forms first (rule change 13)",
+        help="이 epoch(0부터 셈) 전에는 SpecAugment를 끈다. CTC 정렬이 먼저 형성되게 한다(규칙 변경 13)",
     )
-    p.add_argument(
-        "--perturb-start-epoch", type=int, default=0, help="speed perturbation is off before this epoch"
-    )
+    p.add_argument("--perturb-start-epoch", type=int, default=0, help="이 epoch 전에는 속도 교란을 끈다")
     p.add_argument(
         "--augment-start-step",
         type=int,
         default=0,
-        help="when > 0, SpecAugment starts at this optimizer step attempt instead of at "
-        "--augment-start-epoch (for arms whose batch rule differs: same step count)",
+        help="0보다 크면 --augment-start-epoch 대신 이 옵티마이저 step 시도부터 SpecAugment를 켠다"
+        "(배치 규칙이 다른 후보를 같은 step 수에 맞추려는 것)",
     )
     p.add_argument(
         "--allow-recipe-change",
         action="store_true",
-        help="resume even if the saved recipe differs from the current arguments (recorded in meta)",
+        help="저장된 처방이 지금 인자와 달라도 재개한다(차이는 meta에 기록된다)",
     )
     p.add_argument("--fp32", action="store_true")
-    p.add_argument(
-        "--eval-chunk", type=int, default=16, help="simulated chunk (frames) evaluated every epoch"
-    )
-    p.add_argument("--max-steps", type=int, default=0, help="stop early (benchmarks)")
+    p.add_argument("--eval-chunk", type=int, default=16, help="매 epoch 평가할 simulated 청크 크기(프레임)")
+    p.add_argument("--max-steps", type=int, default=0, help="이 step 수에서 일찍 멈춘다(벤치마크용)")
     p.add_argument("--resume", action="store_true")
-    p.add_argument("--init", default="", help="checkpoint to start from (Stage 4 continuation)")
+    p.add_argument("--init", default="", help="시작 가중치로 쓸 체크포인트(4단계 이어 학습)")
     p.add_argument("--log-every", type=int, default=100)
     p.add_argument(
         "--cuda-memory-fraction",
         type=float,
         default=0.0,
-        help="cap PyTorch's GPU memory pool at this fraction of the card (0 = no cap). The caching allocator "
-        "otherwise keeps fragmented blocks (9.4 GB reserved for 4.7 GB used) and Windows pages the excess",
+        help="PyTorch GPU 메모리 풀을 카드 메모리의 이 비율로 제한한다(0 = 제한 없음). 제한이 없으면 캐싱 "
+        "할당기가 조각난 블록을 붙잡고(실사용 4.7 GB에 9.4 GB 예약) Windows가 넘친 부분을 페이징한다",
     )
     return p
 
 
+# scripts/stage3.py·stage4.py가 기존 런의 meta.json과 비교해, 등록 처방과 같은 런만 이어받거나 다시 쓴다.
 def expected_recipe(argv: list[str]) -> dict:
-    """Recipe (RECIPE_KEYS) that `train.py argv` would record."""
+    """train.py에 argv를 넘겼을 때 기록될 처방(RECIPE_KEYS)."""
     args = build_parser().parse_args(argv)
     return {k: getattr(args, k) for k in RECIPE_KEYS}
 
 
+# epochs.jsonl 줄 수로 세면 체크포인트 저장 전에 멈춘 epoch까지 '완료'로 셀 수 있어 체크포인트를 기준으로
+# 삼는다(Codex 2단계 검토 반영, docs/ai-verification.md). 3·4단계 실행기가 완료·재개 여부 판단에 쓴다.
 def completed_epochs(run: Path) -> int:
-    """Epochs completed according to the run's last.pt (0 if none, or if the checkpoint is mid-epoch
-    or diverged); the epoch log can be ahead of the checkpoint when a run stops between the two writes."""
+    """런의 last.pt 기준으로 끝낸 epoch 수를 센다.
+
+    last.pt가 없거나, epoch 도중에 썼거나, 발산한 런이면 0이다. 두 파일을 쓰는 사이에 멈추면 epoch 로그가
+    체크포인트보다 앞설 수 있다.
+    """
     path = run / "last.pt"
     if not path.exists():
         return 0
@@ -316,25 +364,36 @@ def main(argv: list[str] | None = None) -> None:
 
     run = ROOT / args.run
     run.mkdir(parents=True, exist_ok=True)
+    # 같은 --run에 이전 시도의 로그가 있으면 --resume 없이는 시작하지 않는다. 서로 다른 시도의 로그가 한
+    # 파일에 섞이지 않게 하려는 규칙이다(규칙 변경 10).
     if not args.resume and any((run / f).exists() for f in ("train.jsonl", "epochs.jsonl", "last.pt")):
         raise SystemExit(
             f"{run} already holds a run; pass --resume or use a new --run (logs are never mixed)"
         )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # GPU 메모리 풀 상한(선택). 2단계 Run A에서 할당기가 실사용 4.7 GB에 9.4 GB를 붙잡고 Windows 화면 처리와
+    # 합쳐 11 GB를 넘으면서 시스템 메모리로 페이징되어 epoch 시간이 두 배 가까이 늘었다. 상한 0.8과
+    # PYTORCH_CUDA_ALLOC_CONF 설정으로 해결했다(docs/experiments.md 2단계 진행 기록, README). 할당기 동작만
+    # 바뀌고 계산은 같아 처방 키에 넣지 않는다.
     if device.type == "cuda" and args.cuda_memory_fraction > 0:
-        # not part of the recipe: it only makes the allocator release cached blocks earlier
         torch.cuda.set_per_process_memory_fraction(args.cuda_memory_fraction, torch.cuda.current_device())
     torch.manual_seed(args.seed)
+    # cuDNN 자동 튜닝을 끈다. 배치마다 모양이 달라 켜 두면 step마다 알고리즘 탐색을 다시 돌려 1.36
+    # s/step이었고, 끄자 0.66 s/step이 됐다(docs/experiments.md 0단계 결과).
     torch.backends.cudnn.benchmark = (
-        False  # shapes change every batch; autotuning per shape dominated step time
+        False  # 배치마다 입력 모양이 바뀌어 모양별 자동 튜닝이 step 시간을 차지했다(위 설명)
     )
 
+    # 데이터 준비: 어휘, 학습 매니페스트, PCM 저장소, 길이 버킷 샘플러. DataLoader는 num_workers=0(메인
+    # 프로세스에서 읽기)이며, 0단계 측정의 데이터 대기 비율은 1.1 %였다.
     vocab = Vocab.load(ROOT / "manifests" / "vocab.json")
     train_utts = read_manifest(ROOT / "manifests" / f"{args.train}.jsonl")
     store = PcmStore(ROOT / "data" / "pcm", args.train)
     dataset = SpeechDataset(train_utts, store, vocab)
     sampler = DurationBucketSampler(train_utts, args.max_duration, args.seed)
     loader = torch.utils.data.DataLoader(dataset, batch_sampler=sampler, collate_fn=collate, num_workers=0)
+    # step 예산: epoch당 step = 배치 수(시드·max_duration이 같으면 항상 같다). 스케줄 길이는
+    # --schedule-steps가 있으면 그 값. dev 손실 규칙 'A,B'는 1부터 센 epoch 번호다(기본 1,3).
     steps_per_epoch = len(sampler)
     total_steps = steps_per_epoch * args.epochs
     schedule_steps = args.schedule_steps or total_steps
@@ -344,6 +403,11 @@ def main(argv: list[str] | None = None) -> None:
     model.to(device)
     n_params = sum(p.numel() for p in model.parameters())
     logmel = LogMel().to(device)
+    # 옵티마이저와 정밀도(docs/survey/README.md "결정", docs/experiments.md "fp16 규칙"): AdamW β=(0.9, 0.98),
+    # weight decay 1e-6. 파라미터·옵티마이저는 fp32이고 forward만 fp16 autocast, GradScaler는 기본값(시작
+    # scale 65,536). bf16_native는 '하드웨어 bf16 지원 여부'를 에뮬레이션을 빼고 기록한다. RTX 2080 Ti에서도
+    # 기본 is_bf16_supported()는 True를 돌려주므로 autocast dtype을 자동으로 고르면 느린 bf16 에뮬레이션이 될
+    # 수 있어 fp16을 명시한다(조사 검증 C9).
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.98), eps=1e-8, weight_decay=1e-6)
     use_amp = device.type == "cuda" and not args.fp32
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -355,11 +419,16 @@ def main(argv: list[str] | None = None) -> None:
 
     start_epoch, step = 0, 0
     recipe = {k: getattr(args, k) for k in RECIPE_KEYS}
-    dev_rule_active = not args.init  # the from-scratch divergence rule does not apply to continuations
+    # --init(4단계 이어 학습)은 이미 정렬된 모델의 가중치만 이어받고 옵티마이저·스케줄은 새로 시작한다(규칙
+    # 변경 16). '정렬이 시작되지 않는 런'을 잡는 dev 손실 규칙은 처음부터 학습하는 런 전용이라 이어 학습에서는
+    # 끈다(규칙 변경 3).
+    dev_rule_active = not args.init
     recipe_diff: dict = {}
-    if args.init and not args.resume:  # on --resume the weights come from last.pt; init is checked as recipe
+    if args.init and not args.resume:  # --resume면 가중치는 last.pt에서 오고 init은 처방으로만 대조한다
         state = torch.load(args.init, map_location=device, weights_only=True)
         model.load_state_dict(state["model"])
+    # 재개: 완료된 epoch의 last.pt만 받는다. 없거나, epoch 도중에 쓴 것이거나, 발산 판정을 받은 런이면
+    # 거부한다(발산한 런은 LR × 0.5로 새 --run에서 다시 시작하는 것이 등록 규칙).
     if args.resume:
         if not (run / "last.pt").exists():
             raise SystemExit(
@@ -374,23 +443,26 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(
                 f"this run diverged ({state['divergence']}); restart with LR x 0.5 under a new --run"
             )
+        # 처방 대조. 처방 저장 기능이 생기기 전에 쓴 체크포인트(2단계 Run A 중단분)는 런의 원래 meta.json
+        # 인자와 비교하고, 그때 없던 옵션은 기본값으로 본다. 다르면 --allow-recipe-change를 명시해야 하며
+        # 차이는 meta-resume-NNN.json에 남는다.
         saved = state.get("recipe")
         recipe_source = "checkpoint"
         if saved is None and (run / "meta.json").exists():
-            # checkpoints written before the recipe guard: compare with the run's original meta.json; options
-            # that did not exist yet count as their defaults
             meta_args = json.loads((run / "meta.json").read_text(encoding="utf-8"))["args"]
             saved = {k: meta_args.get(k, p.get_default(k)) for k in RECIPE_KEYS}
             recipe_source = "meta.json"
         if saved is None:
             recipe_diff = {"recipe": ("missing in checkpoint", "cannot verify")}
         else:
-            saved = {k: saved.get(k, p.get_default(k)) for k in RECIPE_KEYS}  # keys added later = defaults
+            saved = {k: saved.get(k, p.get_default(k)) for k in RECIPE_KEYS}  # 나중에 추가된 키는 기본값
             recipe_diff = {k: (saved[k], recipe[k]) for k in RECIPE_KEYS if saved[k] != recipe[k]}
         if recipe_diff and not args.allow_recipe_change:
             raise SystemExit(
                 f"recipe differs from the checkpoint (pass --allow-recipe-change to override): {recipe_diff}"
             )
+        # 가중치·옵티마이저·GradScaler·step·카운터·dev 손실 이력·dev 규칙 적용 여부·난수 상태를 모두 복원해
+        # 멈추지 않은 런과 같은 지점에서 잇는다.
         model.load_state_dict(state["model"])
         opt.load_state_dict(state["opt"])
         scaler.load_state_dict(state["scaler"])
@@ -400,7 +472,9 @@ def main(argv: list[str] | None = None) -> None:
         dev_rule_active = bool(state.get("dev_loss_rule_active", dev_rule_active))
         if "rng" in state:
             restore_rng(state["rng"], rng, device)
-        # step records of the interrupted epoch would otherwise appear twice in train.jsonl
+        # 중단된 epoch에서 이미 쓴 step 로그(체크포인트 step 이상)는 다시 기록될 것이므로
+        # train-discarded-before-resume-NNN.jsonl로 옮겨 train.jsonl에 같은 step이 두 번 나오지 않게 한다.
+        # 지우지 않고 옮겨서 기록은 남긴다.
         log_path = run / "train.jsonl"
         if log_path.exists():
             kept, dropped = [], []
@@ -414,7 +488,8 @@ def main(argv: list[str] | None = None) -> None:
                     "\n".join(dropped) + "\n", encoding="utf-8"
                 )
                 log_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
-        # an epoch summary written after last.pt (stop between the two writes) must not count as done
+        # last.pt 뒤에 쓴 epoch 요약(두 파일을 쓰는 사이에 멈춘 경우)은 완료로 세면 안 되므로, 재개 시작 epoch
+        # 이후의 요약 줄도 epochs-discarded-before-resume-NNN.jsonl로 옮긴다.
         ep_path = run / "epochs.jsonl"
         if ep_path.exists():
             rows = [x for x in ep_path.read_text(encoding="utf-8").splitlines() if x]
@@ -426,6 +501,9 @@ def main(argv: list[str] | None = None) -> None:
                 kept_rows = [x for x in rows if json.loads(x).get("epoch", -1) < start_epoch]
                 ep_path.write_text("\n".join(kept_rows) + ("\n" if kept_rows else ""), encoding="utf-8")
 
+    # 런 메타데이터: 인자, config, 파라미터 수, step 정의, 발산 규칙 문구, git 커밋, torch·cuDNN 버전, GPU
+    # 이름, bf16 지원 여부, 메모리 설정. 결과를 볼 때 어떤 코드·처방·환경에서 나온 수치인지 추적하기 위해
+    # 남긴다. 재개면 원래 meta.json은 그대로 두고 meta-resume-NNN.json을 새로 쓴다.
     meta = {
         "args": vars(args),
         "config": asdict(cfg),
@@ -454,7 +532,7 @@ def main(argv: list[str] | None = None) -> None:
         meta["resumed_from_epoch"] = start_epoch - 1
         meta["recipe_diff"] = {k: list(v) for k, v in recipe_diff.items()}
         meta["recipe_source"] = recipe_source
-        meta_path = unique_path(run / f"meta-resume-{start_epoch:03d}.json")  # meta.json is kept
+        meta_path = unique_path(run / f"meta-resume-{start_epoch:03d}.json")
     else:
         meta_path = run / "meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -463,6 +541,8 @@ def main(argv: list[str] | None = None) -> None:
     for epoch in range(start_epoch, args.epochs):
         model.train()
         sampler.set_epoch(epoch)
+        # 속도 교란은 --perturb-start-epoch(기본 0)부터 켠다. wait(데이터 대기)·compute(나머지) 시간은 epoch
+        # 요약에 남겨 데이터 대기 비율을 감시한다(0단계: 20 % 넘으면 특징 사전 계산으로 바꾸는 규칙).
         perturb = not args.no_perturb and epoch >= args.perturb_start_epoch
         augment = False
         t_epoch = time.perf_counter()
@@ -472,27 +552,41 @@ def main(argv: list[str] | None = None) -> None:
             wait += time.perf_counter() - t_wait
             t_step = time.perf_counter()
             mel, frames, targets, target_lengths = prepare_batch(batch, logmel, device, rng, perturb)
+            # SpecAugment 커리큘럼(규칙 변경 13·15): 기본은 epoch 3(= 300 s 배치에서 step 2,091)부터 켜고,
+            # --augment-start-step을 주면 step 기준으로 켠다. 앞 구간에서 CTC 정렬이 먼저 형성되게 하려는
+            # 것이다.
             if args.augment_start_step > 0:
                 augment = not args.no_augment and step >= args.augment_start_step
             else:
                 augment = not args.no_augment and epoch >= args.augment_start_epoch
+            # 배치마다 청크 설정을 뽑는다(동적 청크 학습: 50 % 전체 문맥, 50 % 청크 {4, 8, 16, 32} × 좌측 {64,
+            # 128, 무제한}). 통제군 Run B(--offline-only)는 항상 전체 문맥.
             spec = (
                 ChunkSpec(0, -1)
                 if args.offline_only
                 else sample_chunk_spec(cfg.full_context_prob, cfg.chunk_sizes, cfg.left_contexts, rng)
             )
+            # LR은 epoch이 아니라 step 시도 번호로 계산한다(규칙 변경 2: 스케줄·예산·동일 비교는 시도 횟수
+            # 기준).
             for g in opt.param_groups:
                 g["lr"] = lr_at(step, schedule_steps, args.warmup, args.lr)
+            # TrimTail(4단계): 절단 뒤에도 CTC 길이 조건(출력 프레임 ≥ U + 반복 수 + 1)을 지키도록 발화별 최소
+            # mel 프레임을 4 × (최소 출력 프레임 + 1)로 계산해 넘긴다(서브샘플링 4배). 절단 폭은 ms ÷ 10 = mel
+            # 프레임 수.
             if args.trimtail_ms > 0:
-                # minimum mel frames that keep the CTC condition (out frames >= U + repeats + 1)
                 need = torch.tensor([4 * (ctc_min_frames(seq) + 1) for seq in batch["tokens"]], device=device)
                 mel, frames = trim_tail(mel, frames, args.trimtail_ms // 10, need, rng)
-            if args.cr_ctc_alpha > 0:  # two views of the same batch; SpecAugment masks are drawn per row
+            # CR-CTC(3단계 (d)): 같은 배치를 배치 축으로 두 번 이어 붙여 한 번의 forward로 두 뷰를 만든다.
+            # SpecAugment 마스크는 행마다 따로 뽑히므로 두 뷰의 증강이 다르다. 연산이 두 배라 max-duration을
+            # 절반(150 s)으로 줄여 돌렸다(규칙 변경 17).
+            if args.cr_ctc_alpha > 0:
                 mel, frames = torch.cat([mel, mel]), torch.cat([frames, frames])
                 targets, target_lengths = (
                     torch.cat([targets, targets]),
                     torch.cat([target_lengths, target_lengths]),
                 )
+            # fp16 autocast forward와 손실. 손실 함수 안에서 log_softmax를 fp32로 계산하므로 CTC 입력은 항상
+            # fp32다. Peak-First·CR-CTC 항은 옵션일 때만 더하고, 로그용 parts의 loss 값을 갱신한다.
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
                 logits, inter, out_lengths = model(mel, frames, spec, augment=augment)
                 loss, parts = total_loss(logits, inter, out_lengths, targets, target_lengths, cfg.sc_weight)
@@ -507,21 +601,29 @@ def main(argv: list[str] | None = None) -> None:
                     parts["cr"] = float(consistency.detach())
                     parts["loss"] = float(loss.detach())
             opt.zero_grad(set_to_none=True)
+            # 손실이 NaN/Inf면 역전파 없이 건너뛰고 nan_count와 skipped를 올린다(nan_count가 누적 3회면 발산).
             if not torch.isfinite(loss):
                 counters["nan_count"] += 1
                 counters["skipped"] += 1
             else:
+                # fp16 규칙: 스케일된 손실로 역전파 → unscale_로 기울기를 원래 크기로 되돌린 뒤 노름 5.0으로
+                # clip → step → scale 갱신. scale이 줄었다면 GradScaler가 inf/NaN 기울기를 발견해 그 step을
+                # 건너뛴 것이므로 skipped로, 아니면 updates로 센다(규칙 변경 2: 시도·업데이트·스킵을 따로
+                # 기록). 학습 초반 scale이 65,536에서 수백 이하로 내려오며 생기는 스킵 8~10회는 GradScaler의
+                # 정상 동작이다(docs/experiments.md 0단계 결과 보강, 7단계 발산 표).
                 scaler.scale(loss).backward()
                 scaler.unscale_(opt)
                 grad_norm = float(nn.utils.clip_grad_norm_(model.parameters(), 5.0))
                 scale_before = scaler.get_scale()
                 scaler.step(opt)
                 scaler.update()
-                if scaler.get_scale() < scale_before:  # the scaler found inf/nan grads and skipped the step
+                if scaler.get_scale() < scale_before:
                     counters["skipped"] += 1
                 else:
                     counters["updates"] += 1
                 parts["grad_norm"] = grad_norm
+            # fp16 발산 판정(docs/experiments.md "fp16 규칙"): GradScaler scale < 1.0이 100 step 연속이거나
+            # 비유한 손실이 누적 3회면 divergence를 기록하고 이 step 뒤 학습을 멈춘다.
             scale = scaler.get_scale() if use_amp else 1.0
             counters["low_scale_streak"] = (
                 counters["low_scale_streak"] + 1 if (use_amp and scale < 1.0) else 0
@@ -529,6 +631,9 @@ def main(argv: list[str] | None = None) -> None:
             if counters["nan_count"] >= 3 or counters["low_scale_streak"] >= 100:
                 divergence = {"reason": "nan_or_scale", "epoch": epoch, "step": step, **counters}
             compute += time.perf_counter() - t_step
+            # log_every step마다 train.jsonl에 LR, scale, 스킵·업데이트 수, 청크 설정, 배치 크기, 손실 항,
+            # 기울기 노름, GPU 메모리(최대 할당·예약·할당기 재시도 횟수)를 쓴다. 할당기 지표는 2단계의 페이징
+            # 문제 뒤 추가한 감시 항목이다.
             if step % args.log_every == 0:
                 rec = {
                     "epoch": epoch,
@@ -542,7 +647,7 @@ def main(argv: list[str] | None = None) -> None:
                     "left": spec.left_context,
                     "batch": len(batch["ids"]),
                     "mem_gb": torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else None,
-                    # allocator health: reserved pool and how often it had to free cached blocks and retry
+                    # 할당기 상태: 예약된 풀 크기와, 캐시 블록을 비우고 할당을 다시 시도한 횟수
                     "reserved_gb": torch.cuda.memory_reserved() / 1e9 if device.type == "cuda" else None,
                     "alloc_retries": torch.cuda.memory_stats().get("num_alloc_retries", 0)
                     if device.type == "cuda"
@@ -553,6 +658,7 @@ def main(argv: list[str] | None = None) -> None:
                 log.flush()
                 print(json.dumps(rec), flush=True)
             step += 1
+            # 발산이나 --max-steps(벤치마크용)면 epoch 도중이라도 배치 루프를 빠져나간다.
             if divergence or (args.max_steps and step >= args.max_steps):
                 break
             t_wait = time.perf_counter()
@@ -568,6 +674,8 @@ def main(argv: list[str] | None = None) -> None:
             "mem_gb": torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else None,
             **counters,
         }
+        # epoch 도중에 멈춘 경우: dev 평가 없이 요약만 쓰고 last.pt를 epoch_complete=False로 저장한 뒤 끝낸다.
+        # 이 체크포인트는 원인 분석용이며 재개할 수 없다.
         if divergence or (args.max_steps and step >= args.max_steps):
             summary = {**base, "divergence": divergence, "stopped_early": True}
             (run / "epochs.jsonl").open("a", encoding="utf-8").write(json.dumps(summary) + "\n")
@@ -590,6 +698,9 @@ def main(argv: list[str] | None = None) -> None:
                 dev_rule_active,
             )
             break
+        # epoch 끝 dev 평가: dev_mix·dev_h 각각 full과 simulated 청크(--eval-chunk 기본 16프레임 = 640 ms,
+        # 좌측 128)의 한글 전용 CER_ns. scripts/average_checkpoints.py가 이 기록의 dev_mix full CER로 상위
+        # 10개 epoch을 골라 평균 모델을 만든다.
         model.eval()
         dev_results = {}
         for dev in args.devs.split(","):
@@ -601,14 +712,19 @@ def main(argv: list[str] | None = None) -> None:
                     model, vocab, dev, ChunkSpec(args.eval_chunk, 128), device, logmel=logmel, amp=use_amp
                 )["cer_ns"],
             }
+        # dev CTC 손실(최종 헤드, 전체 문맥, 학습과 같은 정밀도)을 재고, 평가 배치의 다른 모양 때문에 생긴
+        # 캐시 블록을 비운다(다음 epoch 학습의 메모리 조각을 줄인다).
         dev_loss = ctc_loss_manifest(model, vocab, args.dev_loss_set, device, logmel=logmel, amp=use_amp)
         if device.type == "cuda":
-            torch.cuda.empty_cache()  # evaluation batches have other shapes; drop their cached blocks
+            torch.cuda.empty_cache()
         dev_loss_hist.append(dev_loss)
+        # dev 손실 발산 규칙(규칙 변경 3·15): epoch B(기본 3) 끝의 dev 손실이 epoch A(기본 1) 끝 값보다 작지
+        # 않으면 발산. 두 값이 모두 유한할 때만 '내려감'으로 인정한다(NaN이면 발산 쪽). 처음부터 학습하는
+        # 런에서 epoch B를 마친 시점에만 한 번 검사한다.
         not_decreasing = len(dev_loss_hist) >= rule_b and not (
             math.isfinite(dev_loss_hist[rule_a - 1])
             and math.isfinite(dev_loss_hist[rule_b - 1])
-            and dev_loss_hist[rule_b - 1] < dev_loss_hist[rule_a - 1]  # non-finite = not decreasing
+            and dev_loss_hist[rule_b - 1] < dev_loss_hist[rule_a - 1]
         )
         if dev_rule_active and epoch == rule_b - 1 and not_decreasing:
             divergence = {
@@ -623,6 +739,8 @@ def main(argv: list[str] | None = None) -> None:
             summary["divergence"] = divergence
         (run / "epochs.jsonl").open("a", encoding="utf-8").write(json.dumps(summary) + "\n")
         print(json.dumps(summary), flush=True)
+        # 완료된 epoch마다 epoch-NNN.pt(평균용 보관)와 last.pt(재개용)를 같은 내용으로 쓴다. 발산 판정을
+        # 받았으면 기록을 남긴 뒤 멈춘다.
         for path in (run / f"epoch-{epoch:03d}.pt", run / "last.pt"):
             save_checkpoint(
                 path,

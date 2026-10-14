@@ -1,18 +1,26 @@
-"""Stage 6 streaming-service measurements (docs/experiments.md 6단계, rule change 21).
+"""6단계 스트리밍 서비스 측정 도구(docs/experiments.md 6단계, 규칙 변경 21).
 
-Subcommands (each writes reports/stage6/<name>.json):
-  grid     simulated CER for chunk {4, 8, 16} x left {64, 128}, algorithmic latency (mean/max), per-chunk
-           compute p50/p90 and RTF on the GPU (fp16) and on the CPU with one thread (fp32); H6.2
-  h61      real cache streaming vs simulated CER on all of dev_H and dev_mix for the service
-           configuration; H6.1
-  session  StreamSession runs on dev_mix (each utterance followed by 3 s of -60 dBFS noise): no-endpoint
-           baseline, rule2 {0.8, 1.2} s with cache reset, then keep-cache for the chosen rule2;
-           early-endpoint CER increase, EP50/EP90 (endpoint time - MFA end of the last word),
-           UPWR/UPSR (H6.3), session CER vs measured CER
-  drift    10 minutes of concatenated dev_H speech through one session: per-minute compute, GPU memory
+하위 명령(각각 reports/stage6/<name>.json을 쓴다):
+  grid     청크 {4, 8, 16} × 좌측 {64, 128}의 simulated CER, 알고리즘 지연(평균/최대), GPU(fp16)와
+           CPU 1스레드(fp32)의 청크당 계산 시간 p50/p90과 RTF. H6.2
+  h61      서비스 구성에서 dev_H·dev_mix 전수의 실제 캐시 스트리밍 CER vs simulated CER. H6.1
+  session  dev_mix에서 StreamSession 실행(발화마다 뒤에 -60 dBFS 잡음 3 s를 붙임): 끝점 끈 기준,
+           캐시 초기화한 rule2 {0.8, 1.2} s, 그다음 고른 rule2에서 캐시 유지. 조기 끝점에 따른 CER
+           증가, EP50/EP90(끝점 시각 − MFA 마지막 단어 끝), 부분 자막 안정성 UPWR/UPSR(H6.3),
+           세션 CER과 측정 CER 비교
+  drift    dev_H 음성을 이어 붙인 10분을 세션 하나로 흘려 분당 계산 시간과 GPU 메모리 변화를 잰다
 
-Usage: uv run python scripts/stage6.py grid --checkpoint outputs/stage4/control/avg10.pt
+사용법: uv run python scripts/stage6.py grid --checkpoint outputs/stage4/control/avg10.pt
 """
+
+# [왜 필요한가] 측정 항목과 판정 규칙은 6단계 측정 전에 등록했다(docs/experiments.md 6단계, 규칙 변경 21·24).
+# 서비스가 쓰는 것과 같은 코드(StreamingEncoder, StreamSession)를 그대로 돌려서, 측정값이 곧 서비스 동작을
+# 대표하게 한다. 결과: H6.1 충족(dev_H +0.002포인트), H6.2 미충족(GPU p90 63.3 ms > 50, CPU 1스레드 46.5 ms는
+# 충족), H6.3 충족, rule2 1.2 s, 끝점 뒤 캐시 유지.
+# [연결] 측정 모델은 4단계 채택 모델(outputs/stage4/trimtail/avg10.pt; docstring 사용법 예시의 control 경로는
+# 판정 전 작성된 예). README의 6단계 명령에서 하위 명령별로 실행한다. 결과 파일마다 체크포인트
+# SHA-256·구성·부분집합 여부(limit)를 남기고, 7단계(scripts/stage7.py)는 h61.json의 이 값들을 확인한 뒤에만
+# 시작한다.
 
 from __future__ import annotations
 
@@ -22,9 +30,12 @@ import sys
 import time
 from pathlib import Path
 
+# numpy: 백분위·지연 통계. torch: 모델 실행, GPU 동기화·메모리 통계, CPU 스레드 수 제한.
 import numpy as np
 import torch
 
+# 프로젝트 내부 모듈: 평가 경로(offline·실제 캐시 스트리밍 디코딩, 채점, autocast), 캐시 스트리밍 인코더,
+# 서비스와 같은 세션·끝점 설정, 첫 패킷 보정 표본 수.
 from stt_scratch.data import PcmStore, read_manifest
 from stt_scratch.evaluate import autocast, decode_offline, decode_streaming, load_model, score
 from stt_scratch.model.features import FIRST_PACKET_EXTRA, LogMel
@@ -34,27 +45,35 @@ from stt_scratch.service.endpoint import EndpointConfig
 from stt_scratch.service.session import StreamSession
 from stt_scratch.text import Vocab
 
+# SR: 표본화율. PACKET: 320 ms 패킷 표본 수(5,120). NOISE_DBFS: 세션 측정에서 발화 뒤에 붙이는 가우시안 잡음
+# 크기(-60 dBFS). 발화 뒤에 묵음 구간을 만들어 끝점이 닫힐 수 있게 한다(규칙 변경 21).
 ROOT = Path(__file__).resolve().parents[1]
 SR = 16000
 PACKET = 5120
 NOISE_DBFS = -60.0
 
 
+# 채점 결과에서 주지표(한글 전용 CER_ns)를 꺼낸다.
 def rate(scored: dict) -> float:
     return scored["hangul_only"]["cer_ns"]["rate"]
 
 
+# 계산 시간은 넣지 않는다(규칙 변경 21). 청크 안 위치에 따라 0~청크 길이만큼 기다리므로(평균 절반) 평균 =
+# 청크/2 + 15 ms, 최대 = 청크 + 15 ms다.
 def algorithmic_latency_ms(chunk: int) -> dict:
-    """A frame waits for the end of its chunk; the mel window adds 15 ms (25 ms window, 10 ms hop)."""
+    """알고리즘 지연: 프레임은 자기 청크가 끝나야 나오고, mel 창(25 ms 창, 10 ms 간격)이 15 ms를 더한다."""
     chunk_ms = chunk * 40
     return {"mean_ms": chunk_ms / 2 + 15, "max_ms": chunk_ms + 15}
 
 
+# seed가 고정된 가우시안 잡음(진폭 = 10^(dBFS/20)). 발화마다 다른 seed를 주되 매번 같은 잡음이 나와 재현된다.
 def noise(seconds: float, seed: int) -> torch.Tensor:
     g = torch.Generator().manual_seed(seed)
     return torch.randn(int(seconds * SR), generator=g) * (10 ** (NOISE_DBFS / 20))
 
 
+# 파형을 서비스 패킷 규약대로 자른다: 첫 패킷 5,120 + 240 표본, 이후 5,120 표본(규칙 변경 9). 그래야 패킷마다
+# mel 32프레임 = 인코더 청크 1개가 나온다. (시작 위치, 조각)을 내준다.
 def packets(wav: torch.Tensor):
     pos, size = 0, PACKET + FIRST_PACKET_EXTRA
     while pos < wav.numel():
@@ -63,9 +82,12 @@ def packets(wav: torch.Tensor):
         size = PACKET
 
 
+# 발화마다 log-mel을 미리 계산하고 청크씩 step만 재므로 특징 계산은 시간에 들어가지 않는다.
+# GPU에서는 step 전후 모두 동기화한다. 앞서 쌓인 GPU 작업이 이 step 시간에 섞이지 않게 하려는 것이다(Codex
+# 4단계 검토, 규칙 변경 24).
 @torch.no_grad()
 def time_steps(model, utts, store, spec, device, amp: bool) -> dict:
-    """Per-chunk encoder step time (ms, synchronized) over whole utterances, plus the real-time factor."""
+    """발화 전체에 걸친 청크당 인코더 step 시간(ms, 동기화)과 RTF(계산 시간 합 ÷ 음성 길이)를 잰다."""
     logmel = LogMel().to(device)
     enc = StreamingEncoder(model, spec)
     times, audio_s = [], 0.0
@@ -74,9 +96,7 @@ def time_steps(model, utts, store, spec, device, amp: bool) -> dict:
         mel, _ = logmel(wav[None], torch.tensor([wav.numel()], device=device))
         state = enc.new_state()
         step = 4 * spec.chunk_size
-        for i in range(
-            0, mel.shape[1], step
-        ):  # includes the partial last chunk (RTF over the whole utterance)
+        for i in range(0, mel.shape[1], step):  # 마지막 부분 청크도 포함한다(RTF는 발화 전체 기준)
             if device.type == "cuda":
                 torch.cuda.synchronize()
             t0 = time.perf_counter()
@@ -96,6 +116,9 @@ def time_steps(model, utts, store, spec, device, amp: bool) -> dict:
     }
 
 
+# grid: 청크 {4, 8, 16}(160·320·640 ms) × 좌측 {64, 128} 각각에 대해 (1) dev_mix·dev_h 전수 simulated CER, (2)
+# 알고리즘 지연, (3) GPU fp16 청크 계산 시간(dev_h 앞 30발화), (4) CPU fp32 1스레드 계산 시간(앞 10발화)을
+# 잰다. 서비스 구성(청크 8, 좌측 128)의 p90으로 H6.2(GPU ≤ 50 ms, CPU 1스레드 ≤ 250 ms)를 판정한다.
 def cmd_grid(args, model, vocab, device) -> dict:
     logmel = LogMel().to(device)
     out = {"configs": []}
@@ -107,6 +130,7 @@ def cmd_grid(args, model, vocab, device) -> dict:
         for n in ("dev_mix", "dev_h")
     }
     timing_utts = sets["dev_h"][0][: args.timing_utts]
+    # CPU 측정용으로 같은 체크포인트를 CPU에 한 벌 더 올린다. CPU 경로는 autocast 없이 fp32다.
     cpu_model, _ = load_model(ROOT / args.checkpoint, torch.device("cpu"))
     for chunk in (4, 8, 16):
         for left in (64, 128):
@@ -122,6 +146,7 @@ def cmd_grid(args, model, vocab, device) -> dict:
                     score(utts, decode_offline(model, vocab, utts, store, spec, device, logmel))
                 )
             row["gpu"] = time_steps(model, timing_utts, sets["dev_h"][1], spec, device, amp=True)
+            # CPU 1스레드 조건(등록 정의). 이 설정은 프로세스 전체에 남는다.
             torch.set_num_threads(1)
             row["cpu1"] = time_steps(
                 cpu_model,
@@ -133,6 +158,7 @@ def cmd_grid(args, model, vocab, device) -> dict:
             )
             print(json.dumps(row), flush=True)
             out["configs"].append(row)
+    # H6.2 판정은 서비스 구성(320 ms, 좌측 128) 한 행으로 한다.
     service = next(r for r in out["configs"] if r["chunk_frames"] == 8 and r["left"] == 128)
     out["h62"] = {
         "gpu_p90_ms": service["gpu"]["p90_ms"],
@@ -142,6 +168,10 @@ def cmd_grid(args, model, vocab, device) -> dict:
     return out
 
 
+# h61: 서비스 구성에서 dev_h·dev_mix 전수를 simulated(청크 마스크 offline)와 실제 캐시 스트리밍(패킷 단위
+# StreamingFbank + StreamingEncoder)으로 각각 디코딩해 CER 차이를 낸다. H6.1: 실제 − simulated ≤
+# 0.1포인트(dev_H 기준, 방향 있는 차이). 위반이면 캐시 버그로 보고 진행하지 않기로 등록했다. 두 경로 모두 같은
+# fp16 autocast라 차이는 캐시 경로에서만 나온다(규칙 변경 8).
 def cmd_h61(args, model, vocab, device) -> dict:
     logmel = LogMel().to(device)
     spec = ChunkSpec(args.chunk, args.left)
@@ -158,8 +188,10 @@ def cmd_h61(args, model, vocab, device) -> dict:
     return out
 
 
+# EP(끝점 지연)의 기준이다. 4단계 지연 스크립트의 MFA CSV 읽기 함수를 그대로 쓴다. 마지막 조각의 끝이 곧
+# 마지막 어절의 끝이므로 어절 묶기는 필요 없다.
 def last_word_end(name: str) -> dict[str, float]:
-    """MFA end time of the last word per utterance (Hangul-only utterances with an alignment)."""
+    """발화별 MFA 마지막 단어 끝 시각(초). 정렬이 있는 한글 전용 발화만 들어간다."""
     sys.path.insert(0, str(ROOT / "scripts"))
     from stage4_latency import load_alignment
 
@@ -174,10 +206,14 @@ def last_word_end(name: str) -> dict[str, float]:
     return ends
 
 
+# 세션은 서비스와 같은 StreamSession이고, 발화 뒤에 잡음 tail_s초를 붙여 패킷 단위로 흘린다(끝점이 닫힐 수
+# 있게). 반환: 가설(세그먼트 최종 자막을 공백으로 이은 것), 첫 끝점 시각, (세그먼트의 부분 자막 목록, 최종
+# 자막) 목록.
+# reset: 끝점 뒤 인코더 캐시를 초기화할지(True) 유지할지(False).
 def run_sessions(
     model, vocab, spec, utts, store, endpoint: EndpointConfig, reset: bool, device, tail_s: float
 ):
-    """One StreamSession per utterance (+ tail noise). Returns hypotheses, endpoint times and partials."""
+    """발화마다 StreamSession을 하나씩(뒤에 잡음을 붙여) 돌려 가설, 끝점 시각, 부분 자막을 돌려준다."""
     logmel = LogMel().to(device)
     hyps, first_endpoint, partial_runs = {}, {}, []
     for k, u in enumerate(utts):
@@ -188,10 +224,13 @@ def run_sessions(
             for ev in session.push_samples(piece):
                 if ev.kind == "partial":
                     partials_by_segment.setdefault(ev.segment, []).append(ev.text)
+                # 첫 끝점 시각 = 그 끝점이 난 패킷의 끝 시각(오디오 기준). 빈 세그먼트를 닫는 endpoint
+                # 이벤트도 첫 끝점에 포함한다(규칙 변경 24).
                 elif ev.kind in ("final", "endpoint"):
                     if ev.kind == "final":
                         finals.append(ev)
                     first_endpoint.setdefault(u.id, (pos + piece.numel()) / SR)
+        # 스트림 끝: 남은 부분 청크를 처리하고 열린 세그먼트를 닫는다.
         for ev in session.flush():
             finals.append(ev)
         hyps[u.id] = " ".join(f.text for f in finals)
@@ -200,10 +239,15 @@ def run_sessions(
     return hyps, first_endpoint, partial_runs
 
 
+# 정의는 규칙 변경 21에 등록했다. strict 판에서 append-only greedy의 미완 단어는 아직 덜 나온 상태일 뿐이라
+# 0이 아니어도 '수정'은 아니다(실측 strict UPWR 0.85, UPSR 0.99는 진행 중인 단어가 있다는 뜻).
 def stability(partial_runs) -> dict:
-    """UPWR: complete words of partials (all but a trailing unfinished word) that differ from the final
-    word at the same position, over final words; UPSR: segments with any such word. 'strict' also counts
-    the trailing word whenever it is not yet the final word (an append-only decoder only extends it)."""
+    """부분 자막 안정성(H6.3) 지표를 계산한다.
+
+    UPWR: 부분 자막의 완결 단어(뒤에 공백이 온 단어. 마지막 미완 단어는 제외) 가운데 최종 자막의 같은 위치
+    단어와 다른 것의 수 ÷ 최종 단어 수. UPSR: 그런 단어가 하나라도 있는 세그먼트 비율. 'strict' 판은 마지막
+    미완 단어도 아직 최종 단어와 다르면 센다(append-only 디코더는 그 단어를 이어 늘리기만 한다).
+    """
     unstable = strict = final_words = bad_segments = bad_strict = 0
     for partials, final in partial_runs:
         fw = final.split()
@@ -232,11 +276,16 @@ def stability(partial_runs) -> dict:
     }
 
 
+# session: dev_mix 전수(발화 + 잡음 3 s)로 서비스 세션을 돌려 끝점 규칙과 캐시 정책을 등록 규칙대로 한 번
+# 고르고 그 성능을 잰다(규칙 변경 21). 순서: 끝점 끈 기준 → rule2 0.8·1.2 s(캐시 초기화) → 고른 rule2에서 캐시
+# 유지 → 정책 선택 → H6.3 → 서비스 경로 CER 점검.
 def cmd_session(args, model, vocab, device) -> dict:
     spec = ChunkSpec(args.chunk, args.left)
     utts = read_manifest(ROOT / "manifests/dev_mix.jsonl")[: args.limit or None]
     store = PcmStore(ROOT / "data/pcm", "dev_mix")
     ends = last_word_end("dev_mix")
+    # 끝점을 사실상 끈 설정(세 규칙의 시간을 아주 크게). 이 기준 세션 CER과 비교해 조기 끝점이 CER을 얼마나
+    # 올리는지 본다.
     off = EndpointConfig(rule1_s=1e9, rule2_s=1e9, rule3_s=1e9)
     out = {
         "spec": f"chunk{args.chunk} left{args.left}",
@@ -256,6 +305,7 @@ def cmd_session(args, model, vocab, device) -> dict:
         )
         runs[rule2] = (hyps, ep, partials)
         cer = rate(score(utts, hyps))
+        # EP = 첫 끝점 시각 − MFA 마지막 단어 끝(정렬 있는 발화만). EP50/EP90은 그 중앙값·90분위(ms).
         delays = [ep[u] - ends[u] for u in ep if u in ends]
         out[f"rule2_{rule2}_reset"] = {
             "cer_ns": cer,
@@ -266,9 +316,13 @@ def cmd_session(args, model, vocab, device) -> dict:
             **stability(partials),
         }
         print(rule2, out[f"rule2_{rule2}_reset"], flush=True)
+    # rule2 선택: 기준 대비 CER 증가가 0.2포인트 이하인 것 중 짧은 쪽, 둘 다 넘으면 1.2 s(등록된 대체 규칙).
+    # 실측은 둘 다 넘어 1.2 s가 됐다.
     ok = [r for r in (0.8, 1.2) if out[f"rule2_{r}_reset"]["cer_increase_pp"] <= 0.2]
     chosen = min(ok) if ok else 1.2
     out["rule2_chosen"] = chosen
+    # 고른 rule2에서 끝점 뒤 캐시를 유지하는 실행. 초기화보다 CER이 낮으면 keep, 같거나 높으면 reset으로
+    # 고정한다. 정책을 keep으로 고르면 EP·안정성도 keep 실행의 값을 보고한다(chosen; 규칙 변경 24).
     hyps, keep_ep, keep_partials = run_sessions(
         model, vocab, spec, utts, store, EndpointConfig(rule2_s=chosen), False, device, args.tail_s
     )
@@ -286,8 +340,10 @@ def cmd_session(args, model, vocab, device) -> dict:
     out["cache_policy"] = "keep" if keep < reset else "reset"
     chosen_metrics = out["keep_cache"] if out["cache_policy"] == "keep" else out[f"rule2_{chosen}_reset"]
     out["chosen"] = {"rule2_s": chosen, "cache_policy": out["cache_policy"], **chosen_metrics}
+    # H6.3: 선택 구성과 기준 모두 UPWR = 0(부분 자막이 한 번 낸 완결 단어를 고치지 않음).
     out["h63_met"] = chosen_metrics["upwr"] == 0 and out["baseline_no_endpoint"]["upwr"] == 0
-    # service path CER (no-endpoint session) vs the measured real-streaming CER on dev_mix (rule: within 0.1)
+    # 서비스 경로 CER 점검: 서비스 경로(끝점 끈 세션)의 CER이 h61에서 잰 dev_mix 실제 스트리밍 CER과
+    # ±0.1포인트 안이어야 한다(등록 규칙). 부분집합(--limit) 실행에서는 비교하지 않는다.
     h61 = ROOT / "reports" / "stage6" / "h61.json"
     if h61.exists() and not args.limit:
         real = json.loads(h61.read_text(encoding="utf-8"))["dev_mix"]["real_streaming"]
@@ -300,6 +356,12 @@ def cmd_session(args, model, vocab, device) -> dict:
     return out
 
 
+# drift: dev_H 발화를 0.5 s 잡음 간격으로 이어 --minutes(기본 10)분 길이 오디오를 만들고 한 세션으로 흘려,
+# 분당 청크 계산 p50/p90, 약 30초마다 GPU 할당 메모리, 피크 메모리를 잰다. 긴 세션에서 계산 시간이나 메모리가
+# 늘어나는지 확인하려는 측정이다(RoPE 절대 위치처럼 세션 길이에 따라 커지는 값이 있으므로;
+# docs/survey/README.md §6의 드리프트 항목).
+# 실시간 속도가 아니라 가능한 한 빠르게 처리한 결과다(규칙 변경 24의 표기). 0.5 s 간격에서는 rule2가 닫지 않아
+# 세그먼트 대부분이 20 s 상한(rule3)으로 닫혔다.
 def cmd_drift(args, model, vocab, device) -> dict:
     spec = ChunkSpec(args.chunk, args.left)
     utts = read_manifest(ROOT / "manifests/dev_h.jsonl")
@@ -317,6 +379,8 @@ def cmd_drift(args, model, vocab, device) -> dict:
     finals = 0
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
+    # 패킷마다 이번에 새로 생긴 청크 계산 시간만 그 패킷의 분(minute)에 모으고, 30초 경계를 지나는 패킷에서
+    # 메모리를 기록한다.
     for pos, piece in packets(wav):
         n_before = len(session.stats.compute_ms)
         finals += sum(ev.kind == "final" for ev in session.push_samples(piece))
@@ -340,6 +404,12 @@ def cmd_drift(args, model, vocab, device) -> dict:
     }
 
 
+# 하위 명령을 실행하고 결과에 체크포인트 경로·SHA-256·장치·구성·limit·소요 시간을 붙여 저장한다. 같은
+# 체크포인트·구성·전수일 때만 결과를 다시 쓰거나 7단계 사전 검사에서 통과로 보게 하려는 출처 기록이다(규칙
+# 변경 24·25).
+# 인자: command, --checkpoint, --name(결과 파일 이름, 기본 명령 이름), --chunk·--left(서비스 구성, 8·128),
+# --timing-utts·--cpu-utts(grid 계산 시간 발화 수), --limit(앞 N발화만; 0 = 전수), --tail-s(세션 잡음 길이),
+# --minutes·--rule2·--policy(drift 설정), --device.
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("command", choices=["grid", "h61", "session", "drift"])

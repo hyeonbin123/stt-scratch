@@ -1,1 +1,1 @@
-"""Korean STT from scratch."""
+"""처음부터 설계·학습하는 한국어 음성 인식(STT) 패키지."""

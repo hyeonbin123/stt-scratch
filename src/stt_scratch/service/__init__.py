@@ -1,1 +1,1 @@
-"""Streaming STT service (WebSocket server, session, endpointing)."""
+"""스트리밍 STT 서비스(WebSocket 서버, 스트림 세션, 끝점 검출)."""
