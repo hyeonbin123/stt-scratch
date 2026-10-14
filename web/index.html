@@ -19,6 +19,7 @@
   .meta { color: var(--muted); font-size: 13px; }
   table { border-collapse: collapse; font-size: 13px; }
   td { padding: 2px 10px 2px 0; }
+  #metatable { margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -29,7 +30,7 @@
   <span class="meta" id="status">대기</span>
 </div>
 <div id="final"><span id="partial"></span></div>
-<table class="meta" style="margin-top:8px">
+<table class="meta" id="metatable">
   <tr><td>서버 설정</td><td id="info">-</td></tr>
   <tr><td>보낸 청크</td><td id="sent">0</td></tr>
   <tr><td>마지막 부분 자막 지연(보낸 뒤 → 받음)</td><td id="lat">-</td></tr>

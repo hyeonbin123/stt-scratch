@@ -92,8 +92,10 @@ async def main_async(args: argparse.Namespace) -> None:
     store = PcmStore(ROOT / "data" / "pcm", args.manifest)
     out = ROOT / "reports" / "stage6" / f"{args.name or 'client-' + args.manifest}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
-    info_url = args.url.replace("ws://", "http://").rsplit("/", 1)[0] + "/info"
-    with urllib.request.urlopen(info_url, timeout=10) as r:  # provenance: what the server served
+    info_url = args.url.replace("wss://", "https://").replace("ws://", "http://").rsplit("/", 1)[0] + "/info"
+    if not info_url.startswith(("http://", "https://")):  # never let --url reach file:// or other schemes
+        raise SystemExit(f"--url must be ws:// or wss://, got {args.url}")
+    with urllib.request.urlopen(info_url, timeout=10) as r:  # noqa: S310  # nosec B310: scheme checked above
         server_info = json.loads(r.read())
     meta = {"server_info": server_info, "manifest": args.manifest, "limit": args.limit,
             "paced": not args.fast, "started": time.strftime("%Y-%m-%d %H:%M:%S")}  # fmt: skip

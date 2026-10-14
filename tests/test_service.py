@@ -7,6 +7,7 @@ import json
 import pytest
 import torch
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from stt_scratch.model.config import ModelConfig
 from stt_scratch.model.conformer import ChunkConformerCTC
@@ -177,6 +178,40 @@ def test_websocket_round_trip(tmp_path) -> None:
                 break
     assert got[-1]["type"] == "stats" and got[-1]["chunks"] == n_mel_frames(16000) // 32
     assert any(m["type"] == "final" for m in got)
+    # security (OWASP ZAP findings): headers on every response, hash-based CSP on the page, no API docs,
+    # no local directory layout in /info, cross-site WebSocket refused
+    page = client.get("/")
+    csp = page.headers["content-security-policy"]
+    assert "'sha256-" in csp and "unsafe-inline" not in csp and "frame-ancestors 'none'" in csp
+    for r in (page, client.get("/info"), client.get("/openapi.json")):
+        assert r.headers["x-content-type-options"] == "nosniff" and r.headers["x-frame-options"] == "DENY"
+        assert r.headers["cross-origin-resource-policy"] == "same-origin"
+        assert "content-security-policy" in r.headers and "permissions-policy" in r.headers
+    assert client.get("/docs").status_code == 404 and client.get("/redoc").status_code == 404
+    assert client.get("/info").json()["checkpoint"] == "m.pt"  # outside the repository: file name only
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws", headers={"origin": "http://evil.example"}) as bad:
+            bad.receive_text()
+    with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as good:
+        good.send_text("flush")
+        assert json.loads(good.receive_text())["type"] == "stats"
+
+
+def test_page_csp_hashes_match_the_inline_blocks() -> None:
+    from stt_scratch.service import server
+
+    html = "<style>a{}</style><script>let x = 1;</script>"
+    csp = server.page_csp(html)
+    import base64
+    import hashlib
+
+    for block in ("a{}", "let x = 1;"):
+        digest = base64.b64encode(hashlib.sha256(block.encode()).digest()).decode()
+        assert f"'sha256-{digest}'" in csp
+    assert server.same_origin(None, "127.0.0.1:8765") and server.same_origin(
+        "http://127.0.0.1:8765", "127.0.0.1:8765"
+    )
+    assert not server.same_origin("http://evil.example", "127.0.0.1:8765")
 
 
 @pytest.mark.parametrize("reset_cache", [True, False])

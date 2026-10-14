@@ -1,0 +1,224 @@
+{
+ "date": "2026-10-14",
+ "tools": {
+  "OWASP ZAP": "2.17.0 (zaproxy/zap-stable, zap-baseline.py + zap-api-scan.py -f openapi)",
+  "bandit": "1.9.4",
+  "pip-audit": "2.10.1",
+  "gitleaks": "8.30.1"
+ },
+ "bandit_before": {
+  "totals": {
+   "SEVERITY.HIGH": 0,
+   "SEVERITY.LOW": 21,
+   "SEVERITY.MEDIUM": 1,
+   "SEVERITY.UNDEFINED": 0
+  },
+  "by_test": {
+   "B101 LOW": 5,
+   "B311 LOW": 5,
+   "B404 LOW": 4,
+   "B603 LOW": 5,
+   "B607 LOW": 2,
+   "B310 MEDIUM": 1
+  }
+ },
+ "bandit_after": {
+  "totals": {
+   "SEVERITY.HIGH": 0,
+   "SEVERITY.LOW": 21,
+   "SEVERITY.MEDIUM": 0,
+   "SEVERITY.UNDEFINED": 0
+  },
+  "by_test": {
+   "B101 LOW": 5,
+   "B311 LOW": 5,
+   "B404 LOW": 4,
+   "B603 LOW": 5,
+   "B607 LOW": 2
+  }
+ },
+ "pip_audit": {
+  "packages_audited": 69,
+  "vulnerable": [
+   {
+    "name": "setuptools",
+    "version": "81.0.0",
+    "vulns": [
+     {
+      "id": "PYSEC-2026-3447",
+      "aliases": [
+       "GHSA-h35f-9h28-mq5c",
+       "BIT-setuptools-2026-59890",
+       "CVE-2026-59890"
+      ],
+      "fix": [
+       "83.0.0"
+      ]
+     },
+     {
+      "id": "PYSEC-2026-3447",
+      "aliases": [
+       "GHSA-h35f-9h28-mq5c",
+       "CVE-2026-59890",
+       "BIT-setuptools-2026-59890"
+      ],
+      "fix": [
+       "83.0.0"
+      ]
+     }
+    ]
+   }
+  ],
+  "torch_by_pypi_version": [
+   {
+    "name": "torch",
+    "version": "2.11.0",
+    "id": "PYSEC-2025-194",
+    "aliases": [
+     "CVE-2025-3000",
+     "GHSA-rrmf-rvhw-rf47"
+    ],
+    "fix": [
+     "2.13.0"
+    ]
+   }
+  ]
+ },
+ "gitleaks": {
+  "commits_scanned": 51,
+  "leaks": 0
+ },
+ "zap_baseline": [
+  {
+   "alert": "Content Security Policy (CSP) Header Not Set",
+   "risk": "Medium (High)",
+   "count": 1
+  },
+  {
+   "alert": "Missing Anti-clickjacking Header",
+   "risk": "Medium (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Cross-Origin-Embedder-Policy Header Missing or Invalid",
+   "risk": "Low (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Cross-Origin-Opener-Policy Header Missing or Invalid",
+   "risk": "Low (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Cross-Origin-Resource-Policy Header Missing or Invalid",
+   "risk": "Low (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Permissions Policy Header Not Set",
+   "risk": "Low (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "X-Content-Type-Options Header Missing",
+   "risk": "Low (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Modern Web Application",
+   "risk": "Informational (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Storable and Cacheable Content",
+   "risk": "Informational (Medium)",
+   "count": 3
+  }
+ ],
+ "zap_baseline2": [
+  {
+   "alert": "Modern Web Application",
+   "risk": "Informational (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Non-Storable Content",
+   "risk": "Informational (Medium)",
+   "count": 3
+  }
+ ],
+ "zap_api": [
+  {
+   "alert": "Content Security Policy (CSP) Header Not Set",
+   "risk": "Medium (High)",
+   "count": 1
+  },
+  {
+   "alert": "Missing Anti-clickjacking Header",
+   "risk": "Medium (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Cross-Origin-Embedder-Policy Header Missing or Invalid",
+   "risk": "Low (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Cross-Origin-Opener-Policy Header Missing or Invalid",
+   "risk": "Low (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Cross-Origin-Resource-Policy Header Missing or Invalid",
+   "risk": "Low (Medium)",
+   "count": 3
+  },
+  {
+   "alert": "Permissions Policy Header Not Set",
+   "risk": "Low (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Unexpected Content-Type was returned",
+   "risk": "Low (High)",
+   "count": 2
+  },
+  {
+   "alert": "X-Content-Type-Options Header Missing",
+   "risk": "Low (Medium)",
+   "count": 3
+  },
+  {
+   "alert": "A Client Error response code was returned by the server",
+   "risk": "Informational (High)",
+   "count": 9
+  },
+  {
+   "alert": "Modern Web Application",
+   "risk": "Informational (Medium)",
+   "count": 1
+  },
+  {
+   "alert": "Storable and Cacheable Content",
+   "risk": "Informational (Medium)",
+   "count": 3
+  }
+ ],
+ "zap_api3": [
+  {
+   "alert": "Unexpected Content-Type was returned",
+   "risk": "Low (High)",
+   "count": 2
+  },
+  {
+   "alert": "A Client Error response code was returned by the server",
+   "risk": "Informational (High)",
+   "count": 9
+  },
+  {
+   "alert": "Non-Storable Content",
+   "risk": "Informational (Medium)",
+   "count": 2
+  }
+ ]
+}

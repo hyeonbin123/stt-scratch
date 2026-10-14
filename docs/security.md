@@ -1,0 +1,44 @@
+# 보안 점검 (2026-10-14, 공개 전)
+
+스트리밍 서비스는 인증이 없는 로컬 데모다(기본으로 127.0.0.1에만 열림). 저장소를 공개하기 전에 무료 도구 네 가지로 점검했다. 결과 요약은 `reports/security/summary.json`, ZAP 보고서 원문은 `reports/security/zap-*-{before,after}.md`.
+
+| 도구 | 버전 | 무엇을 보나 | 대상 |
+|---|---|---|---|
+| OWASP ZAP | 2.17.0 (Docker `zaproxy/zap-stable`) | 동적 점검(DAST): 기본 스캔(수동 규칙)과 OpenAPI 기반 능동 스캔 | `python -m stt_scratch.service.server` 기본 설정, 최종 모델 |
+| bandit | 1.9.4 | Python 정적 분석 | `src/`, `scripts/` |
+| pip-audit | 2.10.1 | 의존성 알려진 취약점(PyPI 권고 DB) | `uv export`로 고정한 69개 패키지 |
+| gitleaks | 8.30.1 | git 기록 전체의 비밀 정보(키·토큰·비밀번호) | 커밋 51개 |
+
+## 결과
+
+**OWASP ZAP**: 수정 전 기본 스캔에서 Medium 2건(CSP 없음, 클릭재킹 방지 헤더 없음), Low 5건(X-Content-Type-Options, Permissions-Policy, Cross-Origin-*-Policy 세 가지 없음)이 나왔다. API 스캔도 같은 헤더 누락에 Low 1건이 더 나왔다. 서버를 다음처럼 고친 뒤 다시 쟀다.
+
+- 모든 HTTP 응답에 보안 헤더: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy: microphone=(self), camera=(), geolocation=()`, `Cross-Origin-{Opener,Embedder,Resource}-Policy`, `Cache-Control: no-store`. JSON 응답의 CSP는 `default-src 'none'; frame-ancestors 'none'`
+- 페이지 CSP는 인라인 `<script>`·`<style>`의 SHA-256 해시만 허용하고(`unsafe-inline` 없음), AudioWorklet용 `blob:`과 같은 출처의 fetch·WebSocket만 연다. 인라인 `style` 속성 하나를 CSS로 옮겼다. 브라우저에서 페이지 스크립트·스타일·WebSocket·AudioWorklet 로드가 이 CSP 아래에서 동작하는 것을 확인했다
+- 쓰지 않는 대화형 API 문서(`/docs`, `/redoc`, 외부 CDN 스크립트)를 껐고, 페이지(`/`)를 API 정의에서 뺐다
+- `/info`가 체크포인트의 로컬 절대 경로 대신 저장소 기준 경로(저장소 밖이면 파일 이름)를 보여 준다
+
+수정 뒤 기본 스캔은 Medium·Low 0건(정보 2건: 캐시 금지 응답, 자바스크립트 페이지), API 스캔은 Low 1건과 정보 2건이다. 남은 Low 1건("Unexpected Content-Type")은 API 스캔이 대상 주소의 루트(`/`)를 함께 요청해 HTML 페이지를 JSON이 아니라고 보고한 것이라 오탐으로 분류했다.
+
+**WebSocket(ZAP이 점검하지 않음, 수동 검토)**: 브라우저는 다른 사이트의 페이지에서도 `ws://127.0.0.1:8765/ws`를 열 수 있다(교차 사이트 WebSocket 하이재킹). 마이크 음성은 그 페이지가 스스로 권한을 받아야 하므로 사용자의 음성이 새지는 않지만, 남의 페이지가 이 서버를 계산 자원으로 쓸 수 있다. Origin 헤더가 있고 서버의 Host와 다르면 연결을 거부(close 1008)하게 했다. Origin을 보내지 않는 스크립트 클라이언트(`scripts/stream_client.py`)는 그대로 쓸 수 있다. 메시지 크기는 uvicorn 기본 상한(16 MiB)을 따른다.
+
+**bandit**: Medium 1건(B310, `scripts/stream_client.py`가 `--url`에서 만든 주소를 `urlopen`에 넘김)을 http·https 스킴만 허용하도록 고쳤다. 남은 Low 21건은 연구 코드의 `assert`(B101), 데이터 섞기용 `random`(B311, 보안 용도 아님), 고정 인자 목록의 `subprocess`(B404·B603·B607: 학습 하위 프로세스와 `git rev-parse`)라 그대로 둔다.
+
+**pip-audit**: 알려진 취약점 2건, 둘 다 이 프로젝트의 사용 방식에는 해당하지 않는다.
+- setuptools 81.0.0, CVE-2026-59890(83.0.0에서 수정): macOS 파일 시스템에서 sdist의 제외 규칙이 우회되는 문제. 이 프로젝트는 sdist를 만들지 않는다. torch 2.11.0+cu128이 setuptools 버전을 묶고 있어 83 이상으로 올리면 torch가 2.10으로 내려가므로(측정 환경이 바뀜) 올리지 않았다
+- torch 2.11.0(PyPI 버전으로 따로 점검, CUDA 빌드 표기 `+cu128`은 PyPI에서 찾지 못함), CVE-2025-3000(2.13.0에서 수정): `torch.jit.script`의 메모리 손상. 코드에서 `torch.jit`을 쓰지 않는다. 체크포인트는 `torch.load(..., weights_only=True)`로만 읽는다
+
+**gitleaks**: 커밋 51개, 약 32 MB에서 비밀 정보 0건.
+
+## 다시 돌리는 방법
+
+```bash
+uv run python -m stt_scratch.service.server     # 다른 셸에서
+docker run --rm -v "$PWD/work/security/zap:/zap/wrk:rw" zaproxy/zap-stable zap-baseline.py -t http://host.docker.internal:8765/ -J baseline.json -w baseline.md -I
+docker run --rm -v "$PWD/work/security/zap:/zap/wrk:rw" zaproxy/zap-stable zap-api-scan.py -t http://host.docker.internal:8765/openapi.json -f openapi -J api.json -w api.md -I
+uvx bandit -r src scripts
+uv export --no-hashes --format requirements-txt --no-emit-project > work/security/requirements.txt && uvx pip-audit -r work/security/requirements.txt --no-deps --disable-pip
+docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:latest git /repo
+```
+
+Windows Git Bash에서는 Docker 볼륨 경로가 바뀌지 않도록 `MSYS_NO_PATHCONV=1`을 앞에 붙이고 `$PWD` 대신 `D:/...` 형식 경로를 쓴다.
