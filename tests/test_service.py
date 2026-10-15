@@ -159,7 +159,7 @@ def test_endpoint_keeps_buffered_audio_and_packet_grid(reset_cache: bool) -> Non
 # 서비스가 평가와 다른 정밀도로 돌던 것을 고쳤으므로(규칙 변경 8·14) 그 상태를 고정한다.
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_session_runs_under_fp16_autocast_on_cuda() -> None:
-    """서비스는 evaluate.decode_streaming과 같은 정밀도로 디코딩한다(규칙 변경 8/12)."""
+    """서비스는 evaluate.decode_streaming과 같은 정밀도로 디코딩한다(규칙 변경 8·14)."""
     model = tiny_model().cuda()
     seen: list[torch.dtype] = []
     model.out_proj.register_forward_hook(lambda m, i, o: seen.append(o.dtype))

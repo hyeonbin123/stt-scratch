@@ -50,7 +50,7 @@ uv run pytest -q
 uv run ruff format src scripts tests && uv run ruff check src scripts tests
 ```
 
-테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합)와 서비스 경로를 확인한다. CUDA가 없으면 fp16 테스트는 건너뛴다.
+테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금)를 확인한다. CUDA가 없으면 fp16 테스트는 건너뛴다.
 
 ## 학습·평가
 
@@ -95,7 +95,8 @@ src/stt_scratch/   text(정규화·어휘), metrics(CER·부트스트랩), data(
                    train, evaluate, service/(endpoint, session, server)
 scripts/           데이터 내려받기·재고·준비, mel 통계, 벤치, 단계별 실행기(stage1~7), 체크포인트 평균,
                    스트리밍 클라이언트, 진단(diag_*), 학습 요약
-tests/             게이트 테스트(test_model), 전처리(test_prepare_data), 서비스(test_service)
+tests/             게이트 테스트(test_model), 전처리(test_prepare_data), 서비스(test_service),
+                   4단계 지연 도우미(test_latency), 봉인 test 보호 장치(test_stage7_guards)
 docs/              survey/(조사·결정), experiments.md(규칙·결과), plan.md, data.md, ai-verification.md, security.md
 manifests/         분할 매니페스트, 어휘, mel 통계 (커밋)
 reports/           단계별 측정 결과 (커밋)

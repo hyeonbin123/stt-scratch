@@ -4,14 +4,12 @@ version = "0.1.0"
 description = "Korean speech-to-text model designed and trained from scratch, with a streaming service"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "datasets>=3.0",
     "fastapi>=0.143.0",
     "httpx>=0.28.1",
     "huggingface-hub>=0.30",
     "jiwer>=4.0",
     "numpy>=2.0",
     "pyarrow>=18",
-    "sentencepiece>=0.2",
     "soundfile>=0.13",
     "torch>=2.7",
     "torchaudio>=2.7",
