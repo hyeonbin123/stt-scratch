@@ -365,7 +365,7 @@ Run A와 같은 step 수·LR·시드. 우선순위 순서, 예산 초과 시 d�
 
 - 공통: 측정 모델은 최종 모델 `outputs/stage4/trimtail/avg10.pt`(SHA-256 6502406c…), 서비스 구성 320 ms 청크·좌측 128, GPU fp16 autocast(CPU는 fp32). 도구 `scripts/followup.py`, 결과 `reports/followup/`. 실행 순서 gate → timing → exit6 → session → final-cpu → summary(앞 결과를 뒤 명령이 읽는다). 결과 파일마다 체크포인트 SHA-256·코드 커밋을 남기고, 있는 결과는 덮지 않는다
 - 판정 기준의 숫자: 채택 임계 max(0.3, 2s) = 1.86포인트, dev_H 가드 +0.3포인트(공통 선택 규칙), 짝지은 구간은 발화 부트스트랩 1,000회·seed 0(`scripts/compare_runs.py`)
-- **부하 조건**: 지연 측정(timing, session의 2차 패스 시간, final-cpu) 전에 쉬는 상태(GPU 사용률 ≤ 10 %, 다른 GPU 계산 프로세스 없음, CPU 전체 사용률 ≤ 25 %)를 최대 10분 기다린다. 아니면 그대로 재고 측정 전후의 GPU·CPU 사용률과 돌던 프로그램을 결과 파일에 남기며, 문서에는 "부하 조건"과 프로그램 일반명을 적는다
+- **부하 조건**: 지연 측정(timing, session의 2차 패스 시간, final-cpu) 전에 쉬는 상태(GPU 사용률 ≤ 10 %, 다른 GPU 계산 프로세스 없음, CPU 전체 사용률 ≤ 25 %)를 최대 10분 기다린다. 아니면 그대로 재고 측정 전후의 GPU·CPU 사용률과 돌던 프로그램을 결과 파일에 남기며, 문서에는 "부하 조건"과 프로그램 일반명을 적는다. (2026-10-15 측정 전 보완: CPU 연기 시험에서 Windows의 nvidia-smi가 탐색기·브라우저 같은 화면 프로세스도 GPU 프로세스 목록에 보여 준다는 것을 확인해, '다른 GPU 계산 프로세스 없음'을 '이 측정 밖의 python GPU 프로세스 없음'으로 정의하고 GPU 사용률은 1초 간격 5번의 평균으로 본다)
 
 ### P3: step 연산 수 줄이기와 CUDA Graph (H6.2 후속)
 - 후보 경로(`StreamingEncoder(path=...)`, 서버 `--step-path`): **fast** = step마다 RoPE 표·청크 마스크를 한 번만 만들어 모든 블록에 넘김, 입력이 청크 하나 안일 때 BACON 오른쪽 탭 가리기(0을 0으로 바꾸는 일) 생략, CUDA fp16 autocast 아래에서는 Linear·conv 가중치를 미리 fp16으로 바꾼 복사본(LayerNorm·정규화 버퍼는 fp32)을 씀. **graph** = fast + 캐시가 꽉 찬 정상 상태 step(17번째 청크부터)을 고정 버퍼 위에서 수동 `torch.cuda.CUDAGraph`로 캡처해 재생(첫 16청크와 flush의 부분 청크는 fast). 둘 다 eager와 같은 값을 같은 순서로 계산하도록 고른 변경이다(CPU fp32·bf16 autocast에서 비트 단위로 같음: `tests/test_fast_streaming.py`)

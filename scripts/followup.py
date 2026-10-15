@@ -245,24 +245,59 @@ def load_snapshot() -> dict:
     }
 
 
-# 쉬는 상태 = GPU 사용률 ≤ 10 %, 이 프로세스 밖의 GPU 계산 프로세스 없음, CPU 전체 사용률 ≤ 25 %.
-# 30초마다 보며 최대 minutes분 기다린다. 결과에 '쉬는 상태에서 쟀는지'와 마지막 기록을 남긴다.
+# 다른 학습·평가 작업: GPU 프로세스 목록 가운데 이 프로세스가 아닌 python. Windows(WDDM)의 nvidia-smi는
+# 탐색기·브라우저 같은 화면 프로세스도 이 목록에 보여 주므로(실측) 목록이 비었는지로는 판단할 수 없다.
+def other_python_gpu_apps(gpu: dict) -> list[dict]:
+    return [
+        a for a in gpu["compute_apps"] if a["name"].lower().startswith("python") and a["pid"] != os.getpid()
+    ]
+
+
+# GPU 사용률은 순간값이 출렁이므로 1초 간격 5번의 평균을 쓴다.
+def gpu_utilization_mean(samples: int = 5) -> float | None:
+    values = []
+    for _ in range(samples):
+        u = gpu_state()["utilization_pct"]
+        if u is not None:
+            values.append(u)
+        time.sleep(1)
+    return float(np.mean(values)) if values else None
+
+
+# 쉬는 상태 = GPU 사용률(5초 평균) ≤ 10 %, 다른 python GPU 프로세스 없음, CPU 전체 사용률 ≤ 25 %. 30초마다
+# 보며 최대 minutes분 기다린다. 결과에 '쉬는 상태에서 쟀는지'와 마지막 기록(사용률·돌던 프로그램)을 남긴다.
 def wait_for_idle(minutes: float) -> dict:
     start = time.time()
     while True:
         snap = load_snapshot()
-        gpu = snap["gpu"]
-        others = [a for a in gpu["compute_apps"] if a["pid"] != os.getpid()]
+        snap["gpu_utilization_mean_pct"] = gpu_utilization_mean()
+        snap["other_python_gpu_apps"] = other_python_gpu_apps(snap["gpu"])
+        util = snap["gpu_utilization_mean_pct"]
         idle = (
-            (gpu["utilization_pct"] is None or gpu["utilization_pct"] <= 10)
-            and not others
+            (util is None or util <= 10)
+            and not snap["other_python_gpu_apps"]
             and (snap["cpu_pct"] is None or snap["cpu_pct"] <= 25)
         )
         waited = time.time() - start
         if idle or waited >= minutes * 60:
             return {"idle": idle, "waited_s": round(waited, 1), "snapshot": snap}
-        print(f"waiting for an idle PC ({waited / 60:.1f} min): {snap}", flush=True)
+        print(
+            f"waiting for an idle PC ({waited / 60:.1f} min): GPU {util} %, CPU {snap['cpu_pct']} %, "
+            f"python on GPU {snap['other_python_gpu_apps']}",
+            flush=True,
+        )
         time.sleep(30)
+
+
+# 요약에 쓰는 부하 한 줄: 쉬는 상태였는지, GPU·CPU 사용률, 다른 python GPU 프로세스, CPU를 많이 쓴 프로그램.
+def load_line(load: dict) -> str:
+    snap = load["snapshot"]
+    others = len(snap.get("other_python_gpu_apps", []))
+    return (
+        f"쉬는 상태 {load['idle']}(대기 {load['waited_s']} s), GPU {snap.get('gpu_utilization_mean_pct')} %, "
+        f"CPU {fmt(snap['cpu_pct'], digits=0)} %, 다른 python GPU 프로세스 {others}개, "
+        f"CPU 상위 {snap['top_cpu_processes']}"
+    )
 
 
 # --- gate: 출력 동일성 관문(P3) ---------------------------------------------------------------------------
@@ -312,12 +347,17 @@ def cmd_gate(args, model, vocab, device) -> None:
         ]
         entry: dict = {"logprob": merge_stats(rows)}
         if cpu_model is not None:
+            # CPU 비교는 1스레드로 돈다. 다른 프로그램이 CPU를 쓰는 중에 여러 스레드로 돌리면 step 하나가 수
+            # 초씩 걸렸다(CPU 연기 시험에서 확인). 값은 스레드 수와 무관하게 두 경로가 같은지만 본다.
+            threads = torch.get_num_threads()
+            torch.set_num_threads(1)
             cpu_rows = [
                 compare_paths_on_utterance(
                     cpu_model, store.waveform(u.id), spec, torch.device("cpu"), path, False
                 )
                 for u in utts[: args.cpu_logprob_utts]
             ]
+            torch.set_num_threads(threads)
             entry["logprob_cpu_fp32"] = merge_stats(cpu_rows)
         result["paths"][path] = entry
         print(path, json.dumps(entry), flush=True)
@@ -782,7 +822,7 @@ def cmd_summary(args, model, vocab, device) -> None:
             f"- 서버 step 경로(등록 규칙): GPU {summary['server_step_path_gpu']}, "
             f"CPU {summary['server_step_path_cpu']}"
         )
-        lines.append(f"- 부하: 측정 전 {load['timing']['load_before']}")
+        lines.append(f"- 부하(timing 측정 전): {load_line(load['timing']['load_before'])}")
     if "exit6" in load:
         for name, e in load["exit6"]["sets"].items():
             d = e["simulated_l6_vs_l12"]
@@ -810,6 +850,7 @@ def cmd_summary(args, model, vocab, device) -> None:
                 f"{fmt(fp['p90'], digits=1)} ms, "
                 f"확정 때 바뀐 세그먼트 {fmt(r['changed_at_final_rate'], digits=3)}"
             )
+        lines.append(f"- 부하(session 측정 전): {load_line(s['load_before'])}")
         cpu_ok = load.get("final_cpu", {}).get("within_cpu_limit")
         summary["p1"]["cpu_within_limit"] = cpu_ok
         lines.append(f"- P1 판정: 채택 {s['p1']['adopt']} {s['p1']['checks']}, CPU 상한 안 {cpu_ok}")
@@ -844,6 +885,10 @@ def main(argv: list[str] | None = None) -> None:
         "--wait-idle-min", type=float, default=10.0, help="지연 측정 전 쉬는 상태를 기다리는 최대 분"
     )
     args = p.parse_args(argv)
+    # Windows 콘솔·파이프의 기본 인코딩(cp949)으로 한국어 요약을 찍으면 로그가 깨지므로 표준 출력을 UTF-8로
+    # 둔다.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     device = torch.device(args.device)
     if args.command == "summary":
         cmd_summary(args, None, None, device)
