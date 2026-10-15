@@ -108,14 +108,26 @@ def decode_offline(
 # StreamingFbank → 청크 단위 StreamingEncoder.step → GreedyState로 흘린다. 발화 하나씩 순서대로 돌리므로
 # simulated보다 느리다. 봉인 test의 스트리밍 수치와 6단계 H6.1이 이 경로로 쟀다.
 @torch.no_grad()
-def decode_streaming(model, vocab, utts, store, spec: ChunkSpec, device, logmel, amp: bool = True):
+def decode_streaming(
+    model,
+    vocab,
+    utts,
+    store,
+    spec: ChunkSpec,
+    device,
+    logmel,
+    amp: bool = True,
+    exit_layer: int | None = None,
+    path: str = "eager",
+):
     """실제 캐시 스트리밍 디코딩.
 
     음성을 4 * chunk_size * 160표본(청크 8이면 320 ms) 패킷으로 넣는다. 첫 패킷에는 FIRST_PACKET_EXTRA 표본을
     더 실어 모든 패킷이 인코더 청크 하나를 채우게 한다. offline 경로와 같은 autocast 아래에서 돌려, 차이가
-    dtype이 아니라 캐시에서만 나오게 한다.
+    dtype이 아니라 캐시에서만 나오게 한다. exit_layer·path는 StreamingEncoder에 그대로 넘긴다(기본값은
+    봉인 test·6단계에 쓴 12층 eager 경로; 다른 값은 7단계 뒤 후속 측정용).
     """
-    enc = StreamingEncoder(model, spec)
+    enc = StreamingEncoder(model, spec, exit_layer=exit_layer, path=path)
     samples_per_chunk = spec.chunk_size * 4 * 160
     hyps: dict[str, str] = {}
     with autocast(device, amp):

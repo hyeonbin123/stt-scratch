@@ -132,6 +132,8 @@ def build_app(
     reset_cache: bool,
     amp: bool | None = None,
     warm: bool = True,
+    step_path: str = "eager",
+    final_pass: str = "none",
 ) -> FastAPI:
     dev = torch.device(device)
     model, _ = load_model(checkpoint, dev)
@@ -139,12 +141,12 @@ def build_app(
     logmel = LogMel().to(dev)
     spec = ChunkSpec(chunk, left)
     use_amp = (dev.type == "cuda") if amp is None else amp
+    # 연결마다 같은 설정으로 세션을 만든다(step 경로·2차 패스는 7단계 뒤 후속 옵션, 규칙 변경 26).
+    options = {"amp": use_amp, "step_path": step_path, "final_pass": final_pass}
     # 예열(session.warm_up): 부분 청크 길이마다 한 번씩 flush해 첫 클라이언트가 새 텐서 모양의 1회성 준비
     # 시간을 겪지 않게 한다. 걸린 시간은 /info의 warm_up_s로 보인다.
     warm_s = (
-        warm_up(StreamSession(model, vocab, spec, logmel, endpoint, reset_cache, amp=use_amp))
-        if warm
-        else 0.0
+        warm_up(StreamSession(model, vocab, spec, logmel, endpoint, reset_cache, **options)) if warm else 0.0
     )
     # 대화형 API 문서(/docs, /redoc)는 쓰지 않고 외부 CDN 스크립트를 불러오므로 끈다(docs/security.md).
     app = FastAPI(title="stt-scratch streaming", docs_url=None, redoc_url=None)
@@ -174,6 +176,8 @@ def build_app(
         "precision": "fp16-autocast" if use_amp else "fp32",
         "endpoint": asdict(endpoint),
         "reset_cache_on_endpoint": reset_cache,
+        "step_path": step_path,
+        "final_pass": final_pass,
         "vocab": len(vocab),
         "warm_up_s": round(warm_s, 2),
     }
@@ -197,7 +201,7 @@ def build_app(
             await socket.close(code=1008)  # 교차 사이트 WebSocket 하이재킹 방어
             return
         await socket.accept()
-        session = StreamSession(model, vocab, spec, logmel, endpoint, reset_cache, amp=use_amp)
+        session = StreamSession(model, vocab, spec, logmel, endpoint, reset_cache, **options)
         try:
             while True:
                 message = await socket.receive()
@@ -210,7 +214,7 @@ def build_app(
                     events = session.flush()
                     stats = session.stats.summary()
                 elif message.get("text") == "reset":
-                    session = StreamSession(model, vocab, spec, logmel, endpoint, reset_cache, amp=use_amp)
+                    session = StreamSession(model, vocab, spec, logmel, endpoint, reset_cache, **options)
                     events = []
                 else:
                     events = []
@@ -226,6 +230,8 @@ def build_app(
                                 "rule": ev.rule,
                                 "frames": ev.frames,
                                 "compute_ms": round(ev.compute_ms, 1),
+                                # 2차 패스를 켰을 때 확정 자막 계산에 더 든 시간(끄면 0)
+                                "final_pass_ms": round(ev.final_pass_ms, 1),
                             },
                             ensure_ascii=False,
                         )
@@ -257,6 +263,21 @@ def main(argv: list[str] | None = None) -> None:
     )
     p.add_argument("--keep-cache", action="store_true", help=argparse.SUPPRESS)  # 6단계 이후 기본 동작
     p.add_argument("--fp32", action="store_true", help="fp16 autocast를 쓰지 않는다(--fp32로 학습한 모델용)")
+    p.add_argument(
+        "--step-path",
+        choices=["eager", "fast", "graph"],
+        default="eager",
+        help="인코더 step 경로. eager = 6·7단계 측정에 쓴 경로, fast = 같은 출력으로 연산 수를 줄인 경로, "
+        "graph = fast + 정상 상태 step의 CUDA Graph(CPU에서는 고정 버퍼 코드만). fast·graph는 출력 동일성 "
+        "관문(docs/experiments.md 규칙 변경 26)을 통과하기 전까지 기본값이 아니다",
+    )
+    p.add_argument(
+        "--final-pass",
+        choices=["none", "full"],
+        default="none",
+        help="full이면 끝점에서 세그먼트를 같은 모델의 전체 문맥으로 다시 디코딩해 확정 자막으로 쓴다(부분 "
+        "자막을 대체). 판정 전 기본값은 none(docs/experiments.md 규칙 변경 26)",
+    )
     args = p.parse_args(argv)
     if not args.checkpoint:
         raise SystemExit("--checkpoint (or STT_CHECKPOINT) is required")
@@ -268,6 +289,8 @@ def main(argv: list[str] | None = None) -> None:
         EndpointConfig(rule2_s=args.rule2),
         args.reset_cache,
         amp=False if args.fp32 else None,
+        step_path=args.step_path,
+        final_pass=args.final_pass,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

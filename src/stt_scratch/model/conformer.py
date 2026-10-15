@@ -96,12 +96,19 @@ class ConformerBlock(nn.Module):
         positions: torch.Tensor,
         spec: ChunkSpec,
         frame_offset: int,
+        mask: torch.Tensor | None = None,
+        rope: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
+        fast_conv: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """청크 하나에 대한 블록 계산(실제 스트리밍).
 
         x: (1, Tc, D) 현재 청크. 첫 프레임의 절대 프레임 번호가 `frame_offset`이다.
         attn_cache: (1, L, D) 청크 앞 L프레임의 LayerNorm을 거친 어텐션 입력.
         conv_cache: (1, D, k-1) 청크 앞 k-1프레임의 conv 입력.
+        mask·rope: 빠른 경로가 step마다 한 번 만든 청크 마스크와 RoPE fp32 표. 둘 다 주거나 둘 다 None이어야
+        한다(None이면 아래에서 블록마다 만든다 — 기본 경로).
+        fast_conv: 입력이 청크 하나 안에 들어갈 때 BACON 오른쪽 탭의 가리기를 건너뛴다(conv.py 참고, 결과는
+        비트 단위로 같다).
         반환: 블록 출력, 키·값 원천 전체(캐시 + 청크; 잘라 내는 일은 호출자가 한다), 새 conv 캐시.
         """
         x = x + 0.5 * self.ffn1(x)
@@ -110,22 +117,24 @@ class ConformerBlock(nn.Module):
         q_in = self.attn_norm(x)
         kv = torch.cat([attn_cache, q_in], dim=1)
         t_c, n_cached = x.shape[1], attn_cache.shape[1]
-        # 키 위치는 절대 프레임 번호(캐시 시작 ~ 청크 끝)로 매겨 RoPE와 청크 경계 계산이 오프라인과 같아지게
-        # 한다.
-        kv_positions = torch.arange(frame_offset - n_cached, frame_offset + t_c, device=x.device)
-        # mask.attention_mask와 같은 규칙(미래 청크 금지, 좌측 left_chunks청크까지)의 마스크를 쿼리 = 현재
-        # 청크, 키 = 캐시 + 청크에 대해 직접 만든다. 스트리밍에는 배치 패딩이 없으므로 패딩 조건은 없다.
-        cq = positions // spec.chunk_size
-        ck = kv_positions // spec.chunk_size
-        allowed = ck[None, :] <= cq[:, None]
-        if spec.left_chunks >= 0:
-            allowed &= ck[None, :] >= (cq[:, None] - spec.left_chunks)
-        mask = allowed[None, None]  # (1, 1, Tc, L + Tc)
-        attn_out = self.attn(q_in, mask, positions, kv=kv, kv_positions=kv_positions)
+        kv_positions = None
+        if mask is None:
+            # 키 위치는 절대 프레임 번호(캐시 시작 ~ 청크 끝)로 매겨 RoPE와 청크 경계 계산이 오프라인과
+            # 같아지게 한다.
+            kv_positions = torch.arange(frame_offset - n_cached, frame_offset + t_c, device=x.device)
+            # mask.attention_mask와 같은 규칙(미래 청크 금지, 좌측 left_chunks청크까지)의 마스크를 쿼리 = 현재
+            # 청크, 키 = 캐시 + 청크에 대해 직접 만든다. 스트리밍에는 배치 패딩이 없으므로 패딩 조건은 없다.
+            cq = positions // spec.chunk_size
+            ck = kv_positions // spec.chunk_size
+            allowed = ck[None, :] <= cq[:, None]
+            if spec.left_chunks >= 0:
+                allowed &= ck[None, :] >= (cq[:, None] - spec.left_chunks)
+            mask = allowed[None, None]  # (1, 1, Tc, L + Tc)
+        attn_out = self.attn(q_in, mask, positions, kv=kv, kv_positions=kv_positions, rope=rope)
         x = x + self.attn_dropout(attn_out)
         # conv 모듈은 이전 청크의 마지막 k−1프레임 캐시를 받아 이어서 계산하고, 다음 청크용 캐시를 돌려준다.
         # frame_offset으로 BACON 오른쪽 탭의 청크 끝 위치가 오프라인과 맞춰진다.
-        y, new_conv_cache = self.conv(x, spec.chunk_size, conv_cache, frame_offset)
+        y, new_conv_cache = self.conv(x, spec.chunk_size, conv_cache, frame_offset, fast=fast_conv)
         x = x + y
         x = x + 0.5 * self.ffn2(x)
         return self.final_norm(x), kv, new_conv_cache

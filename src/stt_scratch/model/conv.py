@@ -49,12 +49,19 @@ class SplitDepthwiseConv1d(nn.Module):
         nn.init.kaiming_uniform_(self.weight, a=5**0.5)
 
     def forward(
-        self, x: torch.Tensor, chunk_size: int, left_cache: torch.Tensor | None = None, frame_offset: int = 0
+        self,
+        x: torch.Tensor,
+        chunk_size: int,
+        left_cache: torch.Tensor | None = None,
+        frame_offset: int = 0,
+        fast: bool = False,
     ) -> torch.Tensor:
         """분할 depthwise conv를 적용한다.
 
         x: (B, C, T). left_cache: (B, C, k-1) 스트리밍용 과거 프레임(None이면 0). frame_offset: x[..., 0]의
-        절대 프레임 번호(스트리밍에서도 청크 경계가 어긋나지 않게 한다).
+        절대 프레임 번호(스트리밍에서도 청크 경계가 어긋나지 않게 한다). fast: 입력 전체가 청크 하나 안에
+        있으면(스트리밍 step) 오른쪽 탭 가리기를 건너뛴다. 그때 청크 끝을 넘는 탭은 모두 오른쪽 0 패딩을
+        읽으므로 가리기가 0을 0으로 바꾸는 일뿐이라 결과가 비트 단위로 같다(tests/test_model.py).
 
         두 절반 모두 보통의 grouped conv1d로 계산한다. 청크 경계 절반은 대칭 커널의 인과 부분(탭 i-half ..
         i)에 오른쪽 탭 i+1 .. i+half를 더한 것이며, 오른쪽 탭은 프레임의 청크 끝을 넘으면 더하기 전에 0으로
@@ -80,8 +87,16 @@ class SplitDepthwiseConv1d(nn.Module):
         out_b = nn.functional.conv1d(xb[:, :, : t + half], w[cc:, None, : half + 1], groups=c - cc)
         # 청크 경계는 절대 프레임 번호로 계산한다(frame_offset = 이 입력 첫 프레임의 절대 번호). 그래야
         # 스트리밍에서 청크를 따로 넣어도 오프라인과 같은 경계가 잡힌다.
-        idx = torch.arange(t, device=x.device) + frame_offset
-        end = (idx // chunk_size + 1) * chunk_size - 1 if chunk_size > 0 else None
+        # 빠른 경로: 입력 [frame_offset, frame_offset + t)가 청크 하나 안에 있으면 청크 끝 ≥ 입력 끝이다.
+        # 그러면 청크 끝을 넘는 오른쪽 탭은 모두 xb 끝의 0 패딩을 읽으므로 가리기가 필요 없다. 실제
+        # 스트리밍의 모든 step(온전한 청크와 flush의 부분 청크, frame_offset은 항상 청크 배수)이 여기에
+        # 해당하고, 탭마다 비교·masked_fill 커널 3개(블록당 21개)가 빠진다. 오프라인 forward(입력이 여러
+        # 청크)는 해당하지 않아 그대로 가린다.
+        if fast and chunk_size > 0 and frame_offset % chunk_size + t <= chunk_size:
+            end = None
+        else:
+            idx = torch.arange(t, device=x.device) + frame_offset
+            end = (idx // chunk_size + 1) * chunk_size - 1 if chunk_size > 0 else None
         # 오른쪽 탭 j: 프레임 i+j가 i의 청크 끝을 넘으면 그 값을 먼저 0으로 가린 뒤 더한다. '모두 더한 다음
         # 넘는 탭을 빼는' 방식은 fp16 반올림에 미래 값이 섞여 미래 불변이 깨졌기 때문에 이렇게 바꿨다(독립
         # 검토 반영, docs/ai-verification.md). 덕분에 fp16에서도 경계 앞 출력이 비트 단위로
@@ -122,8 +137,11 @@ class ConvModule(nn.Module):
         left_cache: torch.Tensor | None = None,
         frame_offset: int = 0,
         valid: torch.Tensor | None = None,
+        fast: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """x: (B, T, D), valid: (B, T) bool. 패딩 프레임은 depthwise conv 전에 0으로 만든다.
+
+        fast는 빠른 스트리밍 경로용으로 depthwise conv에 그대로 넘긴다(SplitDepthwiseConv1d.forward 참고).
 
         반환: (출력, GLU 뒤 신호에서 잘라 낸 새 왼쪽 캐시 (B, D, k-1)).
         """
@@ -143,6 +161,6 @@ class ConvModule(nn.Module):
         ]
         if new_cache.shape[2] < self.cache_frames:
             new_cache = nn.functional.pad(new_cache, (self.cache_frames - new_cache.shape[2], 0))
-        y = self.depthwise(y, chunk_size, left_cache, frame_offset).transpose(1, 2)
+        y = self.depthwise(y, chunk_size, left_cache, frame_offset, fast=fast).transpose(1, 2)
         y = self.pointwise2(self.act(self.norm2(y)))
         return self.dropout(y), new_cache

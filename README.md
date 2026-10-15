@@ -50,7 +50,7 @@ uv run pytest -q
 uv run ruff format src scripts tests && uv run ruff check src scripts tests
 ```
 
-테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금)를 확인한다. CUDA가 없으면 fp16 테스트는 건너뛴다.
+테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금), 후속 옵션(빠른 step 경로가 eager와 비트 단위로 같음, 2차 패스 = 세그먼트의 전체 문맥 디코딩)을 확인한다. CUDA가 없으면 fp16·CUDA Graph 테스트는 건너뛴다. GitHub Actions(`.github/workflows/ci.yml`)가 push마다 CPU에서 ruff와 pytest를 돈다.
 
 ## 학습·평가
 
@@ -66,6 +66,7 @@ uv run python scripts/stage4.py --start runA
 uv run python scripts/stage6.py grid --checkpoint outputs/stage4/trimtail/avg10.pt   # also h61, session, drift
 uv run python scripts/training_summary.py   # fp16 stability and GPU time of every run (final report)
 uv run python -m stt_scratch.evaluate --checkpoint outputs/stage2/runA/avg10.pt --manifest dev_mix --chunk 8 --left 128 --streaming
+uv run python scripts/followup.py gate   # after Stage 7, dev only: gate, timing, exit6, session, final-cpu, summary
 ```
 
 `train.py`는 매 epoch `epochs.jsonl`에 dev CER과 dev CTC 손실을, `train.jsonl`에 손실·LR·GradScaler scale·GPU 메모리를 남기고 체크포인트를 저장한다. 발산 판정, 재개(`--resume`, 처방 대조), SpecAugment 커리큘럼(epoch 3부터), QK-norm은 `docs/experiments.md` "fp16 규칙"과 "규칙 변경"에 있다. Windows에서는 PyTorch 할당기 조각이 커져 GPU 메모리가 넘치지 않도록 `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.8,max_split_size_mb:256`과 `--cuda-memory-fraction 0.8`을 함께 쓴다.
@@ -78,7 +79,7 @@ uv run python -m stt_scratch.evaluate --checkpoint outputs/stage2/runA/avg10.pt 
 uv run python -m stt_scratch.service.server
 ```
 
-기본값은 6단계에서 정한 구성이다: 최종 모델 `outputs/stage4/trimtail/avg10.pt`, 320 ms 청크, 좌측 문맥 128프레임(5.12 s), GPU fp16 autocast, 토큰 뒤 묵음 1.2 s 끝점, 끝점 뒤 인코더 캐시 유지. 시작할 때 부분 청크 길이마다 한 번씩 예열한다(약 8 s). 보안 점검(OWASP ZAP·bandit·pip-audit·gitleaks, 결과와 고친 것)은 `docs/security.md`. 브라우저에서 `http://127.0.0.1:8765/`를 열면 마이크 입력을 320 ms마다 보내고 부분 자막(수정 없이 덧붙기만 함)과 끝점으로 확정된 세그먼트를 보여 준다. 프로토콜은 `src/stt_scratch/service/server.py` 머리말에 있다. 인증이 없으므로 로컬 데모용이다.
+기본값은 6단계에서 정한 구성이다: 최종 모델 `outputs/stage4/trimtail/avg10.pt`, 320 ms 청크, 좌측 문맥 128프레임(5.12 s), GPU fp16 autocast, 토큰 뒤 묵음 1.2 s 끝점, 끝점 뒤 인코더 캐시 유지. 7단계 뒤 후속 옵션(`docs/experiments.md` "7단계 뒤 후속 측정", 규칙 변경 26)으로 `--step-path fast|graph`(같은 출력으로 연산 수를 줄인 인코더 step, graph는 정상 상태 step의 CUDA Graph)와 `--final-pass full`(끝점에서 세그먼트를 같은 모델의 전체 문맥으로 다시 디코딩해 확정 자막으로 씀)이 있다. 등록한 dev 측정의 판정 전까지 기본값은 각각 eager·none이다. 시작할 때 부분 청크 길이마다 한 번씩 예열한다(약 8 s). 보안 점검(OWASP ZAP·bandit·pip-audit·gitleaks, 결과와 고친 것)은 `docs/security.md`. 브라우저에서 `http://127.0.0.1:8765/`를 열면 마이크 입력을 320 ms마다 보내고 부분 자막(수정 없이 덧붙기만 함)과 끝점으로 확정된 세그먼트를 보여 준다. 프로토콜은 `src/stt_scratch/service/server.py` 머리말에 있다. 인증이 없으므로 로컬 데모용이다.
 
 6단계 측정(dev, `docs/experiments.md` "6단계 결과"): 실제 캐시 스트리밍 CER은 simulated와 0.03포인트 안, 청크당 계산 p50 약 62 ms(GPU) / 44 ms(CPU 1스레드), 패킷 송신 → 부분 자막 p50 62 ms(로컬, 청크를 모으는 시간 제외), 끝점 확정 EP50 1.3 s, 10분 길이 오디오를 한 세션으로 처리했을 때(실시간이 아니라 약 2분에 처리) 청크 계산 시간·메모리 증가 없음. 실시간 클라이언트로 지연을 재려면:
 
@@ -94,9 +95,10 @@ src/stt_scratch/   text(정규화·어휘), metrics(CER·부트스트랩), data(
                    model/(features, subsampling, attention, conv, conformer, ctc, decode, streaming),
                    train, evaluate, service/(endpoint, session, server)
 scripts/           데이터 내려받기·재고·준비, mel 통계, 벤치, 단계별 실행기(stage1~7), 체크포인트 평균,
-                   스트리밍 클라이언트, 진단(diag_*), 학습 요약
+                   스트리밍 클라이언트, 진단(diag_*), 학습 요약, 7단계 뒤 후속 측정(followup)
 tests/             게이트 테스트(test_model), 전처리(test_prepare_data), 서비스(test_service),
-                   4단계 지연 도우미(test_latency), 봉인 test 보호 장치(test_stage7_guards)
+                   4단계 지연 도우미(test_latency), 봉인 test 보호 장치(test_stage7_guards),
+                   빠른 step 경로·조기 종료(test_fast_streaming), 끝점 뒤 2차 패스(test_final_pass)
 docs/              survey/(조사·결정), experiments.md(규칙·결과), plan.md, data.md, ai-verification.md, security.md
 manifests/         분할 매니페스트, 어휘, mel 통계 (커밋)
 reports/           단계별 측정 결과 (커밋)

@@ -75,12 +75,14 @@ class RelPosSelfAttention(nn.Module):
         positions: torch.Tensor,
         kv: torch.Tensor | None = None,
         kv_positions: torch.Tensor | None = None,
+        rope: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """어텐션 출력 (B, Tq, D)를 돌려준다.
 
         x: (B, Tq, D) 쿼리(kv가 None이면 키·값도 x에서 만든다). mask: bool (B 또는 1, 1, Tq, Tk), True =
         주목한다. kv: 스트리밍용 키·값 원천 (B, Tk, D)(캐시 + 청크). positions·kv_positions는 절대 프레임
-        번호다.
+        번호다. rope: 빠른 스트리밍 경로가 step마다 한 번 계산해 모든 블록에 넘기는 fp32 표
+        (cos_q, sin_q, cos_k, sin_k)이며, 주면 positions·kv_positions로 표를 다시 만들지 않는다.
         """
         # 쿼리는 x에서, 키·값은 src(오프라인은 x 자체, 스트리밍은 캐시 + 청크)에서 만든다. 같은 qkv Linear를
         # x와 src에 각각 적용하므로 오프라인 경로에서는 x에 대한 투영이 두 번 계산된다(결과는 같고 연산만
@@ -102,11 +104,20 @@ class RelPosSelfAttention(nn.Module):
             k = self.k_norm(k)
         # 오프라인은 쿼리와 키의 위치가 같아 표를 한 번만 만들고, 스트리밍은 키 위치(캐시 시작 ~ 청크 끝)가
         # 쿼리 위치(청크)와 달라 따로 만든다.
-        cos_q, sin_q = rope_cos_sin(positions, self.head_dim, self.theta, q.dtype)
-        if kv_positions is None:
-            cos_k, sin_k = cos_q, sin_q
+        if rope is not None:
+            # 빠른 스트리밍 경로(streaming.StreamingEncoder path="fast"/"graph"): 표는 rope_cos_sin을 fp32로
+            # 부른 결과라, 여기서 q·k dtype으로 바꾸면 아래 기본 경로가 블록마다 만드는 표와 비트 단위로 같다
+            # (rope_cos_sin도 fp32로 계산한 뒤 마지막에 dtype을 바꾼다). 블록 12개 × 표 2개를 step마다 다시
+            # 계산하던 커널 수를 줄이려는 것이다(docs/experiments.md 6단계 결과 H6.2 진단).
+            cos_q, sin_q, cos_k, sin_k = rope
+            cos_q, sin_q = cos_q.to(q.dtype), sin_q.to(q.dtype)
+            cos_k, sin_k = cos_k.to(k.dtype), sin_k.to(k.dtype)
         else:
-            cos_k, sin_k = rope_cos_sin(kv_positions, self.head_dim, self.theta, k.dtype)
+            cos_q, sin_q = rope_cos_sin(positions, self.head_dim, self.theta, q.dtype)
+            if kv_positions is None:
+                cos_k, sin_k = cos_q, sin_q
+            else:
+                cos_k, sin_k = rope_cos_sin(kv_positions, self.head_dim, self.theta, k.dtype)
         q = apply_rope(q, cos_q, sin_q)
         k = apply_rope(k, cos_k, sin_k)
         # SDPA: bool 마스크는 True인 칸만 softmax에 들어간다. RTX 2080 Ti(sm_75)에서는 flash 커널을 쓸 수 없어
