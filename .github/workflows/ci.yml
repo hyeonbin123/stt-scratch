@@ -1,0 +1,42 @@
+name: CI
+
+# push와 pull request마다 린트(ruff)와 테스트(pytest)를 GPU 없이 돌린다.
+# 테스트는 작은 무작위 모델로 구조적 성질(미래 누출 없음, 캐시 스트리밍 == 오프라인, 서비스 경로 등)만 보므로
+# CPU에서 돈다. CUDA가 필요한 테스트는 테스트 안의 skipif(torch.cuda.is_available())로 건너뛴다.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    # ubuntu-latest는 2026-10-19부터 Ubuntu 26으로 바뀌므로 러너 이미지를 고정한다(같은 계정의 다른 저장소와 같은 선택).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      # setup-uv는 v8부터 움직이는 major 태그를 내지 않으므로 정확한 릴리스로 고정한다. v6부터 python-version만으로는
+      # 가상환경이 켜지지 않아, 아래 uv pip install이 쓸 .venv를 activate-environment로 만든다(uv run도 같은 .venv를 쓴다).
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.11"
+          activate-environment: true
+      # uv.lock은 학습용으로 torch·torchaudio를 CUDA 12.8 빌드(+cu128)로 묶는다. 테스트에는 GPU가 필요 없으므로
+      # 잠긴 버전과 같은 번호의 CPU 빌드를 PyTorch CPU 색인에서 받고, 나머지 잠긴 패키지는 CUDA 빌드만 쓰는 리눅스
+      # 전용 휠(nvidia-*, triton, cuda-*)을 빼고 그대로 설치한다. --locked는 uv.lock이 pyproject.toml과 어긋나면
+      # 실패하므로 잠금 파일이 낡은 채로 통과하지 않는다.
+      - name: Install
+        shell: bash
+        run: |
+          uv export --locked --no-hashes --no-annotate --no-emit-project --group dev -o "$RUNNER_TEMP/locked.txt"
+          grep -E '^(torch|torchaudio)==' "$RUNNER_TEMP/locked.txt" | sed -E 's/\+cu[0-9]+//; s/ *;.*//' > "$RUNNER_TEMP/torch.txt"
+          test "$(wc -l < "$RUNNER_TEMP/torch.txt")" -eq 2
+          grep -vE '^(torch==|torchaudio==|nvidia-|triton==|cuda-)' "$RUNNER_TEMP/locked.txt" > "$RUNNER_TEMP/rest.txt"
+          uv pip install -r "$RUNNER_TEMP/torch.txt" --index-url https://download.pytorch.org/whl/cpu
+          uv pip install -r "$RUNNER_TEMP/rest.txt"
+          uv pip install --no-deps -e .
+      # README의 린트 명령과 같은 범위(src, scripts, tests)를 검사한다. format은 고치지 않고 검사만 한다.
+      - name: Lint
+        run: |
+          uv run --no-sync ruff check src scripts tests
+          uv run --no-sync ruff format --check src scripts tests
+      - name: Test
+        run: uv run --no-sync pytest -q

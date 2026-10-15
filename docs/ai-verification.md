@@ -73,6 +73,7 @@
 - **고친 것**: (1) 규칙 변경 12번이 비어 있는데 머리말은 '1~12와 14', 서비스 docstring·테스트는 '규칙 변경 8/12'라고 적었다. `git show b6e27a0`으로 처음 12번이던 '서비스 경로 정밀도·버퍼'가 13번을 넣으며 14번으로 바뀐 것을 확인하고, 번호는 되돌리지 않은 채 머리말·14번 항목·docstring·테스트 설명을 맞췄다. (2) `docs/plan.md`의 '외부 연동' 문구(다른 프로젝트 문구가 남은 것)와 Docker 언급을 이 저장소에 맞게 고치고, 구조 요약을 최종 모델(InterCTC 6층 + TrimTail)로, 5단계 산출물을 '생략'으로. (3) `docs/survey/README.md` 머리의 '초안', "'결정' 절은 비워 둔다", '문서를 고치지 않았다'를 실제 상태(결정 완료, 정정은 각 조사 문서 끝 절, 커밋 be3f55f)로 바꾸고 결정 뒤 측정으로 바뀐 구성을 결정 절 끝에 덧붙임. (4) README의 테스트 목록에 `test_latency`, `test_stage7_guards` 추가. (5) 5단계 생략 사유의 '공개본에서 확인하지 못했다'를 '받은 HF parquet 사본에서 확인하지 않았다(OpenSLR 40 tar에는 LM이 들어 있다고 적혀 있음)'로 정확히 함(판정 불변)
 - **의존성**: 코드 어디서도 import하지 않는 `sentencepiece`와 `datasets`를 `pyproject.toml`에서 빼고 `uv.lock`만 다시 잠갔다(`uv remove --no-sync`; 지운 패키지 17개 외 버전 변화 없음, torch 2.11.0+cu128 그대로). `docs/security.md`의 pip-audit 기록(69개 패키지)은 2026-10-14 시점 기록이라 그대로 둔다
 - **검증**: ruff check·format --check 통과, CPU에서 `pytest` 82 통과·5 건너뜀(CUDA 전용)
+- **CI 추가**(`.github/workflows/ci.yml`): 같은 계정의 다른 공개 저장소와 같은 방식으로 GitHub Actions에서 ruff check·format --check와 pytest를 돈다. uv.lock의 torch·torchaudio(2.11.0+cu128)는 같은 번호의 CPU 빌드로 바꿔 설치하고 CUDA 전용 휠은 뺀다. CUDA가 필요한 테스트 5개는 기존 skipif로 건너뛴다
 
 ## 2026-10-14 Codex 7단계(최종 보고) 독립 검토 반영 (`work/relay/2026-10-14-0321-stage7-review-codex.md`)
 - **방식**: 봉인 test를 한 번 잰 뒤(02:10~03:18) 최종 보고(experiments.md "7단계 결과", README "결과")와 `reports/final/` 요약·봉인 기록·7단계 스크립트·사후 분할 스크립트·학습 요약을 stdin으로 넣어 정적 검토. 새 test 측정은 요청하지 않음. P1 4, P2 6, P3 1. 모두 보고 문구 문제이고 수치·판정은 바꾸지 않았다
