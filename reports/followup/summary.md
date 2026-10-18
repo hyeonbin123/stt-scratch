@@ -1,0 +1,24 @@
+# 후속 측정 요약 (자동 생성, 판정 규칙은 docs/experiments.md 규칙 변경 26)
+
+- 관문: {'fast': True, 'graph': True}, 그래프 캡처 True (None)
+- cuda fp16 eager 12층: 모든 청크 p50 64.7 / p90 72.5 ms, 정상 상태 p90 71.8 ms, RTF 0.222
+- cuda fp16 fast 12층: 모든 청크 p50 39.3 / p90 46.8 ms, 정상 상태 p90 47.7 ms, RTF 0.130
+- cuda fp16 graph 12층: 모든 청크 p50 38.1 / p90 43.0 ms, 정상 상태 p90 8.5 ms, RTF 0.096
+- cuda fp16 eager 6층: 모든 청크 p50 33.2 / p90 39.3 ms, 정상 상태 p90 39.7 ms, RTF 0.109
+- cuda fp16 fast 6층: 모든 청크 p50 20.8 / p90 23.6 ms, 정상 상태 p90 23.7 ms, RTF 0.067
+- cuda fp16 graph 6층: 모든 청크 p50 20.2 / p90 22.3 ms, 정상 상태 p90 4.6 ms, RTF 0.050
+- cpu fp32 1 thread eager 12층: 모든 청크 p50 46.8 / p90 51.3 ms, 정상 상태 p90 52.1 ms, RTF 0.148
+- cpu fp32 1 thread fast 12층: 모든 청크 p50 40.3 / p90 44.4 ms, 정상 상태 p90 45.4 ms, RTF 0.129
+- cpu fp32 1 thread eager 6층: 모든 청크 p50 25.5 / p90 28.7 ms, 정상 상태 p90 29.0 ms, RTF 0.082
+- cpu fp32 1 thread fast 6층: 모든 청크 p50 22.4 / p90 24.4 ms, 정상 상태 p90 25.7 ms, RTF 0.071
+- 서버 step 경로(등록 규칙): GPU graph, CPU fast
+- 부하(timing 측정 전): 쉬는 상태 False(대기 614.3 s), GPU 42.8 %, CPU 22 %, 다른 python GPU 프로세스 0개, CPU 상위 ['game 2.72', 'shell 0.17', 'system 0.16', 'chat app 0.06', 'AI assistant app 0.05', 'game launcher 0.03', 'AI assistant app 0.03', 'browser 0.03']
+- 6층 dev_mix: simulated 6층 26.57 vs 12층 26.89 (차 -0.31, 95 % [-0.83, 0.24]), 실제 스트리밍 6층 26.56
+- 6층 dev_h: simulated 6층 14.50 vs 12층 18.76 (차 -4.27, 95 % [-4.58, -3.95]), 실제 스트리밍 6층 14.51
+- 6단계 재현(1.2 s 캐시 유지 1-pass): True, step 경로 graph
+- P2 rule2: 증가 0.000포인트 → 0.8 s
+- dev_mix_rule2_1.2: 1-pass 26.862 / 2-pass 22.812, EP50 1295 ms, 2차 패스 p50/p90 49.7/55.6 ms, 확정 때 바뀐 세그먼트 0.965
+- dev_mix_rule2_0.8: 1-pass 26.862 / 2-pass 22.847, EP50 905 ms, 2차 패스 p50/p90 49.6/55.1 ms, 확정 때 바뀐 세그먼트 0.962
+- dev_h_rule2_0.8: 1-pass 18.749 / 2-pass 16.015, EP50 875 ms, 2차 패스 p50/p90 50.3/57.1 ms, 확정 때 바뀐 세그먼트 0.971
+- 부하(session 측정 전): 쉬는 상태 False(대기 615.4 s), GPU 43.8 %, CPU 18 %, 다른 python GPU 프로세스 0개, CPU 상위 ['game 4.53', 'shell 0.17', 'system 0.16', 'AI assistant app 0.11', 'AI assistant app 0.08', 'AI assistant app 0.08', 'chat app 0.08', 'AI assistant app 0.06']
+- P1 판정: 채택 True {'dev_mix_improvement': True, 'dev_mix_ci_below_zero': True, 'dev_h_guard': True, 'gpu_p90': True}, CPU 상한 안 True

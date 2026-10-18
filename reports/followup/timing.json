@@ -1,0 +1,242 @@
+{
+ "provenance": {
+  "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+  "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+  "git_head": "55e9915e8451eb109612d85660e2770d0b5575dd",
+  "git_dirty": false,
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 2080 Ti",
+  "torch": "2.11.0+cu128",
+  "limit": 0,
+  "started": "2026-10-18 08:29:09"
+ },
+ "load_before": {
+  "idle": false,
+  "waited_s": 614.3,
+  "snapshot": {
+   "time": "2026-10-18 08:39:13",
+   "gpu": {
+    "utilization_pct": 44.0,
+    "memory_used_mb": 2005.0,
+    "memory_total_mb": 11264.0,
+    "gpu_process_entries": 29
+   },
+   "cpu_pct": 21.549479166666664,
+   "top_cpu_processes": [
+    "game 2.72",
+    "shell 0.17",
+    "system 0.16",
+    "chat app 0.06",
+    "AI assistant app 0.05",
+    "game launcher 0.03",
+    "AI assistant app 0.03",
+    "browser 0.03"
+   ],
+   "gpu_utilization_mean_pct": 42.8,
+   "other_python_gpu_apps": 0
+  }
+ },
+ "rows": [
+  {
+   "path": "eager",
+   "layers": 12,
+   "all_chunks": {
+    "n": 728,
+    "p50": 64.72495003254153,
+    "p90": 72.47017001500355,
+    "max": 547.2656000056304
+   },
+   "steady_chunks": {
+    "n": 224,
+    "p50": 64.49010001961142,
+    "p90": 71.80894997436553,
+    "max": 89.1890000202693
+   },
+   "rtf": 0.2221197256961774,
+   "device": "cuda fp16"
+  },
+  {
+   "path": "fast",
+   "layers": 12,
+   "all_chunks": {
+    "n": 728,
+    "p50": 39.269000000786036,
+    "p90": 46.83543997234665,
+    "max": 61.10429996624589
+   },
+   "steady_chunks": {
+    "n": 224,
+    "p50": 39.493849995778874,
+    "p90": 47.70099997986108,
+    "max": 61.10429996624589
+   },
+   "rtf": 0.12979512830808473,
+   "device": "cuda fp16"
+  },
+  {
+   "path": "graph",
+   "layers": 12,
+   "all_chunks": {
+    "n": 728,
+    "p50": 38.08045000187121,
+    "p90": 42.992159991990775,
+    "max": 55.43710000347346
+   },
+   "steady_chunks": {
+    "n": 224,
+    "p50": 7.912500004749745,
+    "p90": 8.535149967065081,
+    "max": 10.817500005941838
+   },
+   "rtf": 0.09579694140797086,
+   "device": "cuda fp16"
+  },
+  {
+   "path": "eager",
+   "layers": 6,
+   "all_chunks": {
+    "n": 728,
+    "p50": 33.225050021428615,
+    "p90": 39.27092000958511,
+    "max": 49.72539999289438
+   },
+   "steady_chunks": {
+    "n": 224,
+    "p50": 33.105800015619025,
+    "p90": 39.689240016741685,
+    "max": 48.60410001128912
+   },
+   "rtf": 0.1091157520233231,
+   "device": "cuda fp16"
+  },
+  {
+   "path": "fast",
+   "layers": 6,
+   "all_chunks": {
+    "n": 728,
+    "p50": 20.758500002557412,
+    "p90": 23.64527001627721,
+    "max": 35.422899993136525
+   },
+   "steady_chunks": {
+    "n": 224,
+    "p50": 20.81509999698028,
+    "p90": 23.69475998566486,
+    "max": 28.583600011188537
+   },
+   "rtf": 0.06741739619600996,
+   "device": "cuda fp16"
+  },
+  {
+   "path": "graph",
+   "layers": 6,
+   "all_chunks": {
+    "n": 728,
+    "p50": 20.15549998031929,
+    "p90": 22.3082099983003,
+    "max": 30.40839999448508
+   },
+   "steady_chunks": {
+    "n": 224,
+    "p50": 4.146000021137297,
+    "p90": 4.601359972730279,
+    "max": 6.898600026033819
+   },
+   "rtf": 0.050088303049021586,
+   "device": "cuda fp16"
+  },
+  {
+   "path": "eager",
+   "layers": 12,
+   "all_chunks": {
+    "n": 234,
+    "p50": 46.801049989880994,
+    "p90": 51.31338002393022,
+    "max": 57.26729996968061
+   },
+   "steady_chunks": {
+    "n": 66,
+    "p50": 48.71979999006726,
+    "p90": 52.066000003833324,
+    "max": 55.26860000099987
+   },
+   "rtf": 0.14778829168146354,
+   "device": "cpu fp32 1 thread"
+  },
+  {
+   "path": "fast",
+   "layers": 12,
+   "all_chunks": {
+    "n": 234,
+    "p50": 40.298149979207665,
+    "p90": 44.37123004463501,
+    "max": 52.74350004037842
+   },
+   "steady_chunks": {
+    "n": 66,
+    "p50": 43.305949977366254,
+    "p90": 45.40745000122115,
+    "max": 50.554600020404905
+   },
+   "rtf": 0.12859458952918343,
+   "device": "cpu fp32 1 thread"
+  },
+  {
+   "path": "eager",
+   "layers": 6,
+   "all_chunks": {
+    "n": 234,
+    "p50": 25.464999984251335,
+    "p90": 28.68938997271471,
+    "max": 33.17300003254786
+   },
+   "steady_chunks": {
+    "n": 66,
+    "p50": 27.07275000284426,
+    "p90": 28.985499986447394,
+    "max": 33.17300003254786
+   },
+   "rtf": 0.08208096816415877,
+   "device": "cpu fp32 1 thread"
+  },
+  {
+   "path": "fast",
+   "layers": 6,
+   "all_chunks": {
+    "n": 234,
+    "p50": 22.420499997679144,
+    "p90": 24.3999199999962,
+    "max": 27.846100041642785
+   },
+   "steady_chunks": {
+    "n": 66,
+    "p50": 23.64629996009171,
+    "p90": 25.671949988463894,
+    "max": 27.846100041642785
+   },
+   "rtf": 0.07123412529484219,
+   "device": "cpu fp32 1 thread"
+  }
+ ],
+ "load_after": {
+  "time": "2026-10-18 08:42:48",
+  "gpu": {
+   "utilization_pct": 39.0,
+   "memory_used_mb": 2235.0,
+   "memory_total_mb": 11264.0,
+   "gpu_process_entries": 29
+  },
+  "cpu_pct": 21.94644023514043,
+  "top_cpu_processes": [
+   "game 3.38",
+   "shell 0.16",
+   "system 0.14",
+   "chat app 0.05",
+   "game launcher 0.03",
+   "AI assistant app 0.02",
+   "system 0.02",
+   "system 0.02"
+  ]
+ },
+ "note": "program names in load records are replaced by general categories (raw names kept locally)"
+}

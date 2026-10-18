@@ -1,0 +1,76 @@
+{
+ "provenance": {
+  "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+  "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+  "git_head": "55e9915e8451eb109612d85660e2770d0b5575dd",
+  "git_dirty": false,
+  "device": "cpu",
+  "gpu": null,
+  "torch": "2.11.0+cu128",
+  "limit": 0,
+  "started": "2026-10-18 10:03:47"
+ },
+ "rule2_s": 0.8,
+ "load_before": {
+  "idle": false,
+  "waited_s": 614.2,
+  "snapshot": {
+   "time": "2026-10-18 10:13:51",
+   "gpu": {
+    "utilization_pct": 50.0,
+    "memory_used_mb": 2143.0,
+    "memory_total_mb": 11264.0,
+    "gpu_process_entries": 29
+   },
+   "cpu_pct": 24.0234375,
+   "top_cpu_processes": [
+    "game 3.77",
+    "system 0.14",
+    "shell 0.14",
+    "other 0.11",
+    "AI assistant app 0.08",
+    "chat app 0.08",
+    "AI assistant app 0.05",
+    "system 0.03"
+   ],
+   "gpu_utilization_mean_pct": 47.0,
+   "other_python_gpu_apps": 0
+  }
+ },
+ "warm_up_s": 10.169155800016597,
+ "final_pass_ms": {
+  "n": 85,
+  "p50": 122.89130000863224,
+  "p90": 194.8329599807039,
+  "max": 227.14580001775175
+ },
+ "step_ms": {
+  "n": 1123,
+  "p50": 46.269899990875274,
+  "p90": 50.558560027275234,
+  "max": 70.99510001717135
+ },
+ "segments": 85,
+ "within_cpu_limit": true,
+ "load_after": {
+  "time": "2026-10-18 10:15:21",
+  "gpu": {
+   "utilization_pct": 47.0,
+   "memory_used_mb": 2143.0,
+   "memory_total_mb": 11264.0,
+   "gpu_process_entries": 29
+  },
+  "cpu_pct": 20.10443864229765,
+  "top_cpu_processes": [
+   "game 2.19",
+   "shell 0.13",
+   "AI assistant app 0.05",
+   "AI assistant app 0.03",
+   "game launcher 0.03",
+   "chat app 0.03",
+   "system 0.02",
+   "browser 0.02"
+  ]
+ },
+ "note": "program names in load records are replaced by general categories (raw names kept locally)"
+}

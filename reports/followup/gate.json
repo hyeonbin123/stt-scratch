@@ -1,0 +1,64 @@
+{
+ "provenance": {
+  "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+  "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+  "git_head": "55e9915e8451eb109612d85660e2770d0b5575dd",
+  "git_dirty": false,
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 2080 Ti",
+  "torch": "2.11.0+cu128",
+  "limit": 0,
+  "started": "2026-10-18 07:34:13"
+ },
+ "spec": "chunk8 left128",
+ "paths": {
+  "fast": {
+   "logprob": {
+    "steps": 728,
+    "bit_identical_steps": 728,
+    "frames": 5710,
+    "argmax_agree": 5710,
+    "max_abs": 0.0,
+    "argmax_agreement": 1.0
+   },
+   "logprob_cpu_fp32": {
+    "steps": 104,
+    "bit_identical_steps": 104,
+    "frames": 812,
+    "argmax_agree": 812,
+    "max_abs": 0.0,
+    "argmax_agreement": 1.0
+   },
+   "transcripts": "skipped: graph passed (registered order)",
+   "passed": true
+  },
+  "graph": {
+   "logprob": {
+    "steps": 728,
+    "bit_identical_steps": 728,
+    "frames": 5710,
+    "argmax_agree": 5710,
+    "max_abs": 0.0,
+    "argmax_agreement": 1.0
+   },
+   "logprob_cpu_fp32": {
+    "steps": 104,
+    "bit_identical_steps": 104,
+    "frames": 812,
+    "argmax_agree": 812,
+    "max_abs": 0.0,
+    "argmax_agreement": 1.0
+   },
+   "seconds": 888.6,
+   "identical_transcripts": 1113,
+   "utterances": 1113,
+   "cer_ns": 0.18763829165449003,
+   "passed": true
+  }
+ },
+ "graph_captured": true,
+ "graph_failed": null,
+ "eager_seconds": 2192.3,
+ "eager_cer_ns": 0.18763829165449003,
+ "note": "program names in load records are replaced by general categories (raw names kept locally)"
+}

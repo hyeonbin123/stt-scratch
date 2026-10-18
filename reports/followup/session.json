@@ -1,0 +1,289 @@
+{
+ "provenance": {
+  "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+  "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+  "git_head": "55e9915e8451eb109612d85660e2770d0b5575dd",
+  "git_dirty": false,
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 2080 Ti",
+  "torch": "2.11.0+cu128",
+  "limit": 0,
+  "started": "2026-10-18 09:09:32"
+ },
+ "step_path": "graph",
+ "stage6_baseline_no_endpoint_cer_ns": 0.2686214643700674,
+ "stage6_keep_rule2_1.2_cer_ns": 0.2686214643700674,
+ "tail_noise_s": 3.0,
+ "load_before": {
+  "idle": false,
+  "waited_s": 615.4,
+  "snapshot": {
+   "time": "2026-10-18 09:19:37",
+   "gpu": {
+    "utilization_pct": 43.0,
+    "memory_used_mb": 2108.0,
+    "memory_total_mb": 11264.0,
+    "gpu_process_entries": 29
+   },
+   "cpu_pct": 18.489583333333336,
+   "top_cpu_processes": [
+    "game 4.53",
+    "shell 0.17",
+    "system 0.16",
+    "AI assistant app 0.11",
+    "AI assistant app 0.08",
+    "AI assistant app 0.08",
+    "chat app 0.08",
+    "AI assistant app 0.06"
+   ],
+   "gpu_utilization_mean_pct": 43.8,
+   "other_python_gpu_apps": 0
+  }
+ },
+ "runs": {
+  "dev_mix_rule2_1.2": {
+   "set": "dev_mix",
+   "rule2_s": 1.2,
+   "cache_policy": "keep",
+   "cer_ns_stream": 0.2686214643700674,
+   "cer_ns_final_pass": 0.22812373984676537,
+   "final_pass_vs_stream": {
+    "n": 633,
+    "rate_a": 0.22812373984676537,
+    "rate_b": 0.2686214643700674,
+    "ratio_a_over_b": 0.8492386875402101,
+    "diff_a_minus_b": -0.040497724523302026,
+    "diff_ci95": [
+     -0.0459499558790036,
+     -0.035215681024444764
+    ],
+    "ci_excludes_zero": true
+   },
+   "ep_ms": {
+    "n": 633,
+    "p50": 1295.0002288818362,
+    "p90": 1464.9998397827148,
+    "max": 2374.999866485596
+   },
+   "ep_plus_final_pass_ms": {
+    "n": 633,
+    "p50": 1351.3366762688381,
+    "p90": 1513.5082589685915,
+    "max": 2428.1199664832097
+   },
+   "final_pass_ms": {
+    "n": 1129,
+    "p50": 49.72860001726076,
+    "p90": 55.607299983967096,
+    "max": 82.23130000988021
+   },
+   "step_ms": {
+    "n": 22612,
+    "p50": 9.671700012404472,
+    "p90": 44.81487002922222,
+    "max": 74.88769997144118
+   },
+   "segments": 1129,
+   "rules": {
+    "rule2": 703,
+    "rule1": 419,
+    "rule3": 7
+   },
+   "text_segments": 710,
+   "changed_at_final_rate": 0.9647887323943662,
+   "changed_at_final_rate_ignoring_spaces": 0.9450704225352112,
+   "stability_stream": {
+    "upwr": 0.0,
+    "upsr": 0.0,
+    "upwr_strict_trailing": 0.8544458855742902,
+    "upsr_strict_trailing": 0.9929577464788732,
+    "segments": 710
+   },
+   "stability_final_pass": {
+    "upwr": 4.897512437810946,
+    "upsr": 0.9380281690140845,
+    "upwr_strict_trailing": 5.91727078891258,
+    "upsr_strict_trailing": 0.9985915492957746,
+    "segments": 710
+   },
+   "seconds": 710.8
+  },
+  "dev_mix_rule2_0.8": {
+   "set": "dev_mix",
+   "rule2_s": 0.8,
+   "cache_policy": "keep",
+   "cer_ns_stream": 0.2686214643700674,
+   "cer_ns_final_pass": 0.22846938187683621,
+   "final_pass_vs_stream": {
+    "n": 633,
+    "rate_a": 0.22846938187683621,
+    "rate_b": 0.2686214643700674,
+    "ratio_a_over_b": 0.850525412824362,
+    "diff_a_minus_b": -0.040152082493231184,
+    "diff_ci95": [
+     -0.04546842039136984,
+     -0.0350212422179484
+    ],
+    "ci_excludes_zero": true
+   },
+   "ep_ms": {
+    "n": 633,
+    "p50": 904.9998092651368,
+    "p90": 1064.9998741149905,
+    "max": 1625.0000333786013
+   },
+   "ep_plus_final_pass_ms": {
+    "n": 633,
+    "p50": 952.4621809157541,
+    "p90": 1112.577173524071,
+    "max": 1671.725133401342
+   },
+   "final_pass_ms": {
+    "n": 1432,
+    "p50": 49.61780001758598,
+    "p90": 55.139430006965995,
+    "max": 169.64589996496215
+   },
+   "step_ms": {
+    "n": 22612,
+    "p50": 9.828399983234704,
+    "p90": 44.579170033102855,
+    "max": 148.08060001814738
+   },
+   "segments": 1432,
+   "rules": {
+    "rule2": 723,
+    "rule1": 704,
+    "rule3": 5
+   },
+   "text_segments": 728,
+   "changed_at_final_rate": 0.9615384615384616,
+   "changed_at_final_rate_ignoring_spaces": 0.9409340659340659,
+   "stability_stream": {
+    "upwr": 0.0,
+    "upsr": 0.0,
+    "upwr_strict_trailing": 0.854178674351585,
+    "upsr_strict_trailing": 0.9931318681318682,
+    "segments": 728
+   },
+   "stability_final_pass": {
+    "upwr": 4.626031294452347,
+    "upsr": 0.9381868131868132,
+    "upwr_strict_trailing": 5.642247510668564,
+    "upsr_strict_trailing": 0.9986263736263736,
+    "segments": 728
+   },
+   "seconds": 725.0
+  },
+  "dev_h_rule2_0.8": {
+   "set": "dev_h",
+   "rule2_s": 0.8,
+   "cache_policy": "keep",
+   "cer_ns_stream": 0.18749217217050057,
+   "cer_ns_final_pass": 0.16014695445246943,
+   "final_pass_vs_stream": {
+    "n": 1113,
+    "rate_a": 0.16014695445246943,
+    "rate_b": 0.18749217217050057,
+    "ratio_a_over_b": 0.8541527499443331,
+    "diff_a_minus_b": -0.02734521771803114,
+    "diff_ci95": [
+     -0.029829986587859292,
+     -0.024750284996725
+    ],
+    "ci_excludes_zero": true
+   },
+   "ep_ms": {
+    "n": 1107,
+    "p50": 875.0001144409181,
+    "p90": 1035.0002059936526,
+    "max": 1404.9998283386226
+   },
+   "ep_plus_final_pass_ms": {
+    "n": 1107,
+    "p50": 927.0994046004492,
+    "p90": 1088.9598252963601,
+    "max": 1457.4933283380228
+   },
+   "final_pass_ms": {
+    "n": 1692,
+    "p50": 50.285000004805624,
+    "p90": 57.132529997034,
+    "max": 100.83619999932125
+   },
+   "step_ms": {
+    "n": 39597,
+    "p50": 8.366999973077327,
+    "p90": 44.65242001460866,
+    "max": 187.9981000092812
+   },
+   "segments": 1692,
+   "rules": {
+    "rule2": 1115,
+    "rule1": 574,
+    "eos": 3
+   },
+   "text_segments": 1118,
+   "changed_at_final_rate": 0.9713774597495528,
+   "changed_at_final_rate_ignoring_spaces": 0.9543828264758497,
+   "stability_stream": {
+    "upwr": 0.0,
+    "upsr": 0.0,
+    "upwr_strict_trailing": 0.8350521792510743,
+    "upsr_strict_trailing": 0.9973166368515206,
+    "segments": 1118
+   },
+   "stability_final_pass": {
+    "upwr": 5.984694818366218,
+    "upsr": 0.9659192825112107,
+    "upwr_strict_trailing": 6.9800233573053045,
+    "upsr_strict_trailing": 1.0,
+    "segments": 1115
+   },
+   "seconds": 1169.9
+  }
+ },
+ "warm_up_s": 18.210376799979713,
+ "reproduces_stage6": true,
+ "p2": {
+  "increase_pp": 0.0,
+  "chosen_rule2_s": 0.8
+ },
+ "p1": {
+  "dev_mix_diff_pp": -4.015208249323118,
+  "dev_mix_ci95_pp": [
+   -4.546842039136984,
+   -3.5021242217948405
+  ],
+  "dev_h_diff_pp": -2.734521771803114,
+  "final_pass_p90_ms": 55.139430006965995,
+  "checks": {
+   "dev_mix_improvement": true,
+   "dev_mix_ci_below_zero": true,
+   "dev_h_guard": true,
+   "gpu_p90": true
+  },
+  "adopt": true
+ },
+ "load_after": {
+  "time": "2026-10-18 10:03:37",
+  "gpu": {
+   "utilization_pct": 39.0,
+   "memory_used_mb": 2568.0,
+   "memory_total_mb": 11264.0,
+   "gpu_process_entries": 29
+  },
+  "cpu_pct": 23.958333333333336,
+  "top_cpu_processes": [
+   "game 3.08",
+   "system 0.16",
+   "shell 0.14",
+   "game launcher 0.08",
+   "AI assistant app 0.08",
+   "game launcher 0.06",
+   "game launcher 0.06",
+   "AI assistant app 0.06"
+  ]
+ },
+ "note": "program names in load records are replaced by general categories (raw names kept locally)"
+}

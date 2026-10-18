@@ -292,7 +292,8 @@ def wait_for_idle(minutes: float) -> dict:
 # 요약에 쓰는 부하 한 줄: 쉬는 상태였는지, GPU·CPU 사용률, 다른 python GPU 프로세스, CPU를 많이 쓴 프로그램.
 def load_line(load: dict) -> str:
     snap = load["snapshot"]
-    others = len(snap.get("other_python_gpu_apps", []))
+    others = snap.get("other_python_gpu_apps", [])
+    others = len(others) if isinstance(others, list) else others  # 공개 결과 파일에는 개수만 남긴다
     return (
         f"쉬는 상태 {load['idle']}(대기 {load['waited_s']} s), GPU {snap.get('gpu_utilization_mean_pct')} %, "
         f"CPU {fmt(snap['cpu_pct'], digits=0)} %, 다른 python GPU 프로세스 {others}개, "

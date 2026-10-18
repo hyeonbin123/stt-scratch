@@ -1,0 +1,37 @@
+{
+ "files": [
+  "exit6",
+  "final_cpu",
+  "gate",
+  "session",
+  "timing"
+ ],
+ "gate": {
+  "fast": true,
+  "graph": true
+ },
+ "server_step_path_gpu": "graph",
+ "server_step_path_cpu": "fast",
+ "p2": {
+  "increase_pp": 0.0,
+  "chosen_rule2_s": 0.8
+ },
+ "p1": {
+  "dev_mix_diff_pp": -4.015208249323118,
+  "dev_mix_ci95_pp": [
+   -4.546842039136984,
+   -3.5021242217948405
+  ],
+  "dev_h_diff_pp": -2.734521771803114,
+  "final_pass_p90_ms": 55.139430006965995,
+  "checks": {
+   "dev_mix_improvement": true,
+   "dev_mix_ci_below_zero": true,
+   "dev_h_guard": true,
+   "gpu_p90": true
+  },
+  "adopt": true,
+  "cpu_within_limit": true
+ },
+ "reproduces_stage6": true
+}

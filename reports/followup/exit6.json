@@ -1,0 +1,64 @@
+{
+ "provenance": {
+  "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+  "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+  "git_head": "55e9915e8451eb109612d85660e2770d0b5575dd",
+  "git_dirty": false,
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 2080 Ti",
+  "torch": "2.11.0+cu128",
+  "limit": 0,
+  "started": "2026-10-18 08:42:57"
+ },
+ "exit_layer": 6,
+ "sets": {
+  "dev_mix": {
+   "simulated_l6_vs_l12": {
+    "n": 633,
+    "rate_a": 0.26574111411947693,
+    "rate_b": 0.26885189239011464,
+    "ratio_a_over_b": 0.9884293979001499,
+    "diff_a_minus_b": -0.003110778270637715,
+    "diff_ci95": [
+     -0.008287782836435758,
+     0.0023911528662218223
+    ],
+    "ci_excludes_zero": false
+   },
+   "real_streaming_l6_cer_ns": 0.2655682931044415,
+   "real_minus_simulated_l6_pp": -0.017282101503540703,
+   "real_streaming_seconds": 552.0
+  },
+  "dev_h": {
+   "simulated_l6_vs_l12": {
+    "n": 1113,
+    "rate_a": 0.14495052811756357,
+    "rate_b": 0.18761741744249155,
+    "ratio_a_over_b": 0.7725856697819314,
+    "diff_a_minus_b": -0.04266688932492799,
+    "diff_ci95": [
+     -0.04576408626258042,
+     -0.03946009621935392
+    ],
+    "ci_excludes_zero": true
+   },
+   "real_streaming_l6_cer_ns": 0.14505489917755604,
+   "real_minus_simulated_l6_pp": 0.01043710599924752,
+   "real_streaming_seconds": 1010.7,
+   "real_l6_vs_l12": {
+    "n": 1113,
+    "rate_a": 0.14505489917755604,
+    "rate_b": 0.18763829165449003,
+    "ratio_a_over_b": 0.7730559572811214,
+    "diff_a_minus_b": -0.04258339247693399,
+    "diff_ci95": [
+     -0.045640750419600855,
+     -0.03935140446388961
+    ],
+    "ci_excludes_zero": true
+   }
+  }
+ },
+ "descriptive_noninferior": true,
+ "note": "program names in load records are replaced by general categories (raw names kept locally)"
+}
