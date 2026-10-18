@@ -1,9 +1,13 @@
 """WebSocket 스트리밍 STT 서버(FastAPI + uvicorn).
 
-  uv run python -m stt_scratch.service.server  # 최종 모델, 320 ms 청크, 좌측 128, rule2 1.2 s, 캐시 유지
+  uv run python -m stt_scratch.service.server  # 최종 모델, 320 ms 청크, 좌측 128, rule2 0.8 s, 캐시 유지,
+                                               # 끝점 뒤 전체 문맥 2차 패스, step 경로 auto(GPU graph·CPU
+                                               # fast)
 
-기본값은 6단계에서 고른 구성이다(docs/experiments.md). 서버는 시작할 때 가능한 마지막 부분 청크 길이마다
-한 번씩 flush해(예열) 첫 클라이언트가 새 텐서 모양의 1회성 준비 시간을 겪지 않게 한다.
+기본값은 6단계에서 고른 구성에 7단계 뒤 후속 측정(docs/experiments.md 규칙 변경 26)의 판정을 더한 것이다.
+서버는 시작할 때 가능한 마지막 부분 청크 길이마다 한 번씩 flush하고, 2차 패스 길이 묶음마다 전체 문맥
+디코딩을 한 번씩 돌리며, graph 경로면 정상 상태 step의 CUDA Graph를 캡처해(예열) 첫 클라이언트가 1회성 준비
+시간을 겪지 않게 한다.
 
 프로토콜: 클라이언트는 ws://host:port/ws를 열고 little-endian int16 mono 16 kHz PCM을 바이너리 프레임으로
 보낸다(크기는 자유, 320 ms = 10,240바이트 권장). 서버는 JSON 텍스트 프레임으로 답한다.
@@ -18,9 +22,13 @@ GET /은 web/index.html(마이크 클라이언트 페이지), GET /info는 서�
 대화형 API 문서는 끄며, Origin이 다른 사이트인 WebSocket은 거부한다(OWASP ZAP 점검 결과, docs/security.md).
 """
 
-# [구성] 기본값은 6단계에서 정한 서비스 구성이다: 최종 모델(outputs/stage4/trimtail/avg10.pt), 320 ms
-# 청크(8프레임), 좌측 128프레임, GPU fp16 autocast, rule2 1.2 s, 끝점 뒤 캐시 유지(docs/experiments.md 6단계
-# 판정 요약).
+# [구성] 기본값: 최종 모델(outputs/stage4/trimtail/avg10.pt), 320 ms 청크(8프레임), 좌측 128프레임, GPU fp16
+# autocast, 끝점 뒤 캐시 유지(6단계 판정). 7단계 뒤 후속 측정(2026-10-18, reports/followup/summary.md)의
+# 판정으로 rule2를 1.2 s에서 0.8 s로(P2: 캐시 유지 상태에서 끝점 끈 기준 대비 CER 증가 0.000포인트), 확정
+# 자막을 끝점 뒤 전체 문맥 2차 패스로(P1: dev_mix 26.86 → 22.85 %, dev_H 18.75 → 16.01 %, GPU 2차 패스 p90 55
+# ms), step 경로를 GPU graph·CPU fast로(P3: dev_H 전사 1,113/1,113 동일, GPU 청크 p90 72.5 → 43.0 ms) 바꿨다.
+# 모두 dev 수치이며 봉인 test(12층·greedy·1-pass)로는 확인하지 않았다. 서비스 모델은 봉인 test로 잰 12층 모델
+# 그대로다.
 # [보안] 인증이 없는 로컬 데모라 기본으로 127.0.0.1에만 연다. 공개 전 OWASP ZAP 점검에서 나온 보안 헤더 누락을
 # 고치고, ZAP이 보지 않는 WebSocket은 Origin 검사를 따로 넣었다(docs/security.md).
 # [연결] 인식 로직은 service.session.StreamSession에 있고, 이 파일은 연결 관리·직렬화·보안 헤더만 맡는다.
@@ -123,6 +131,18 @@ def shown_path(path: Path) -> str:
 # 모델·어휘·LogMel을 한 번 올리고, 예열을 돌린 뒤 FastAPI 앱을 만들어 돌려준다. 모델은 모든 연결이 공유하고
 # 연결마다 세션 상태(캐시·버퍼)만 따로 둔다. 테스트(tests/test_service.py)는 작은 모델과 warm=True 그대로 이
 # 함수를 직접 부른다.
+# step 경로 auto의 장치별 값: 후속 측정 P3 판정(출력 동일성 관문을 통과하고 같은 실행의 eager보다 청크 p90이
+# 낮은 것 중 가장 빠른 것). GPU는 graph(43.0 ms < eager 72.5 ms), CPU 1스레드는 fast(44.4 ms < 51.3 ms).
+AUTO_STEP_PATH = {"cuda": "graph", "cpu": "fast"}
+
+
+def resolve_step_path(step_path: str, device: str) -> str:
+    """'auto'를 장치에 맞는 step 경로로 바꾼다(그 밖의 값은 그대로). 표에 없는 장치는 eager."""
+    if step_path != "auto":
+        return step_path
+    return AUTO_STEP_PATH.get(torch.device(device).type, "eager")
+
+
 def build_app(
     checkpoint: Path,
     chunk: int,
@@ -141,6 +161,7 @@ def build_app(
     logmel = LogMel().to(dev)
     spec = ChunkSpec(chunk, left)
     use_amp = (dev.type == "cuda") if amp is None else amp
+    step_path = resolve_step_path(step_path, device)
     # 연결마다 같은 설정으로 세션을 만든다(step 경로·2차 패스는 7단계 뒤 후속 옵션, 규칙 변경 26).
     options = {"amp": use_amp, "step_path": step_path, "final_pass": final_pass}
     # 예열(session.warm_up): 부분 청크 길이마다 한 번씩 flush해 첫 클라이언트가 새 텐서 모양의 1회성 준비
@@ -244,18 +265,27 @@ def build_app(
     return app
 
 
-# 명령행 실행. 체크포인트는 --checkpoint 또는 STT_CHECKPOINT 환경 변수(기본은 최종 모델). --reset-cache는
+# 명령행 인자. 체크포인트는 --checkpoint 또는 STT_CHECKPOINT 환경 변수(기본은 최종 모델). --reset-cache는
 # 6단계에서 기각한 '끝점에서 캐시 초기화'를 켠다. --keep-cache는 6단계 전 기본값이 초기화였던 시절의 옵션으로,
-# 지금은 기본값과 같아 도움말에서 숨겼다. --fp32는 fp32로 학습한 모델용이다.
-def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser()
+# 지금은 기본값과 같아 도움말에서 숨겼다. --fp32는 fp32로 학습한 모델용이다. 테스트가 기본값을 확인할 수
+# 있게 파서를 따로 만든다.
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="스트리밍 STT 서버(로컬 데모). 기본값은 6단계·후속 측정 판정의 구성"
+    )
     p.add_argument("--checkpoint", default=os.environ.get("STT_CHECKPOINT", DEFAULT_CHECKPOINT))
     p.add_argument("--chunk", type=int, default=8)
     p.add_argument("--left", type=int, default=128)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--rule2", type=float, default=1.2)
+    p.add_argument(
+        "--rule2",
+        type=float,
+        default=0.8,
+        help="토큰 뒤 묵음 끝점(초). 6단계는 캐시 초기화 상태에서 1.2를 골랐고, 캐시 유지 상태로 다시 잰 "
+        "후속 측정(P2)에서 0.8이 등록 조건(CER 증가 ≤ 0.2포인트)을 만족해 기본값이 됐다(EP50 1,295 → 905 ms)",
+    )
     p.add_argument(
         "--reset-cache",
         action="store_true",
@@ -265,20 +295,26 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--fp32", action="store_true", help="fp16 autocast를 쓰지 않는다(--fp32로 학습한 모델용)")
     p.add_argument(
         "--step-path",
-        choices=["eager", "fast", "graph"],
-        default="eager",
+        choices=["auto", "eager", "fast", "graph"],
+        default="auto",
         help="인코더 step 경로. eager = 6·7단계 측정에 쓴 경로, fast = 같은 출력으로 연산 수를 줄인 경로, "
-        "graph = fast + 정상 상태 step의 CUDA Graph(CPU에서는 고정 버퍼 코드만). fast·graph는 출력 동일성 "
-        "관문(docs/experiments.md 규칙 변경 26)을 통과하기 전까지 기본값이 아니다",
+        "graph = fast + 정상 상태 step의 CUDA Graph(CPU에서는 고정 버퍼 코드만). auto = GPU graph, CPU fast"
+        "(후속 측정 P3: 두 경로 모두 출력 동일성 관문 통과, docs/experiments.md 규칙 변경 26)",
     )
     p.add_argument(
         "--final-pass",
         choices=["none", "full"],
-        default="none",
+        default="full",
         help="full이면 끝점에서 세그먼트를 같은 모델의 전체 문맥으로 다시 디코딩해 확정 자막으로 쓴다(부분 "
-        "자막을 대체). 판정 전 기본값은 none(docs/experiments.md 규칙 변경 26)",
+        "자막을 대체). 후속 측정 P1 채택으로 기본값 full(GPU 2차 패스 p90 55 ms, CPU 1스레드 195 ms). none = "
+        "6단계까지의 1-pass 확정 자막",
     )
-    args = p.parse_args(argv)
+    return p
+
+
+# 명령행 실행: 인자를 읽어 앱을 만들고 uvicorn으로 띄운다.
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     if not args.checkpoint:
         raise SystemExit("--checkpoint (or STT_CHECKPOINT) is required")
     app = build_app(

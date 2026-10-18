@@ -9,7 +9,8 @@ final 이벤트가 세그먼트를 닫는다. 끝점은 인식 상태(greedy 상
 두어, 음성을 잃지 않고 패킷이 32프레임 격자에 계속 맞는다. 인코더는 평가 경로와 같은 fp16 autocast
 아래에서 돈다(docs/experiments.md 규칙 변경 8·14).
 
-7단계 뒤 후속 옵션(docs/experiments.md 규칙 변경 26, 판정 전 기본값은 모두 꺼짐):
+7단계 뒤 후속 옵션(docs/experiments.md 규칙 변경 26). 이 클래스의 기본값은 측정 도구가 쓰는 원래 동작(eager,
+2차 패스 없음)이고, 서버는 후속 판정에 따라 2차 패스와 장치별 step 경로를 켠다(service/server.py):
   final_pass="full"  세그먼트가 닫힐 때(끝점·flush) 그 세그먼트의 mel 전체를 같은 모델의 전체 문맥
                      모드로 한 번 더 디코딩해 확정 자막으로 쓴다(부분 자막은 그대로 320 ms 스트리밍 결과).
                      스트리밍 결과는 final 이벤트의 stream_text에 남는다.

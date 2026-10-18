@@ -68,6 +68,14 @@
 - **잡은 것**: 3단계 예산 추정이 체크포인트 첫·끝 시각 차이를 써서 일시 중지·부하 구간까지 포함하던 것을 epoch 간격 중앙값으로 바꿈. 같은 epoch에서 두 번 재개하면 재개 기록을 덮어쓰던 것을 번호 붙이기로 바꿈
 - **사람이 정한 것**: 없음(3단계 설정·예산은 규칙 변경 17로 측정 전 등록)
 
+## 2026-10-18 후속 측정 실행과 서버 기본값 반영 (규칙 변경 26)
+- **한 것**: Claude Code가 등록한 순서(gate → timing → exit6 → session → final-cpu)로 GPU 측정을 한 번 돌렸다(코드 커밋 55e9915, 추적 파일 변경 없음, 체크포인트 SHA-256 확인). 결과와 판정은 `docs/experiments.md` "7단계 뒤 후속 측정 결과", 원자료는 `reports/followup/`
+- **GPU에서 확인한 것**: CUDA 포함 테스트 108개 통과(CUDA Graph 캡처, fp16 fast·graph = eager 비트 단위). 실제 최종 모델에서 fast·graph의 청크별 log-prob이 eager와 728/728 step 비트 단위로 같고 dev_H 1,113발화 전사가 모두 같았다(CUDA Graph 캡처 성공). 1.2 s 캐시 유지 세션의 1-pass CER이 6단계 값(26.862 %)을 그대로 재현해 측정 도구·graph 경로가 6단계 측정과 같은 결과를 낸다는 것도 확인됐다
+- **판정대로 바꾼 것**: 서버 기본값 `--step-path auto`(GPU graph, CPU fast), `--final-pass full`, `--rule2 0.8`. 라이브러리(`StreamSession`, `EndpointConfig`, `build_app`) 기본값은 측정 도구가 쓰는 원래 동작으로 두고, 명령행 기본값을 확인하는 테스트를 더했다. P4(6층)는 보고만 하고 서비스에 넣지 않았다
+- **부하 조건**: 지연 측정 세 가지 모두 등록대로 10분 기다린 뒤 게임 1개가 GPU를 쓰는 중에 쟀다(같은 실행 안의 경로 비교는 같은 조건)
+- **보안 재점검**: `docs/security.md` "재점검(2026-10-18)"
+- **사람이 정한 것**: 없음(작업 지시로 GPU 실행 시점과 반영 범위를 정함)
+
 ## 2026-10-15 7단계 뒤 후속 구현 (규칙 변경 26, GPU 측정 전)
 - **만든 것**: Claude Code. (1) `StreamingEncoder`의 step 경로 fast·graph(마스크·RoPE 표 공유, 청크 하나 안의 탭 가리기 생략, autocast 가중치 복사본, 정상 상태 step의 고정 버퍼 + 수동 `torch.cuda.CUDAGraph`)와 조기 종료 `exit_layer`, (2) `StreamSession(final_pass="full")`: 끝점에서 세그먼트 mel을 같은 모델의 전체 문맥으로 다시 디코딩하는 2차 패스(128프레임 길이 묶음, 예열), 서버 `--step-path`·`--final-pass`(기본값은 판정 전이라 eager·none), (3) 측정 도구 `scripts/followup.py`(관문·지연·6층·세션·CPU·요약, dev 매니페스트만 염, 결과 덮어쓰기 거부, 부하 조건 기록)
 - **검증(CPU, GPU 사용 없음)**: fast·graph가 eager와 청크별 출력·캐시가 `torch.equal`로 같음(fp32와 CPU bf16 autocast — bf16 autocast로 가중치 복사본의 원리 확인, 자기조건 피드백 있음·없음, 부분 청크 포함), graph의 고정 버퍼 step이 정상 상태에서 실제로 쓰임, 두 스트림이 고정 버퍼를 번갈아 써도 각자 결과가 같음, 6층 조기 종료 스트리밍 = 오프라인 6층 중간 헤드(1e-5), 2차 패스 확정 자막 = 세그먼트 mel의 오프라인 전체 문맥 디코딩, 세그먼트를 이으면 음성 전체(빠짐·겹침 없음), 2차 패스를 켜도 부분 자막·스트리밍 텍스트 불변, 길이 묶음 0 덧붙이기가 유효 프레임을 바꾸지 않음(1e-5), 예열 뒤 세션 = 새 세션, 서버 옵션·/info. `pytest` CPU 101 통과·7 건너뜀(CUDA 전용; CUDA Graph 캡처·재생과 fp16 가중치 복사본은 CUDA 전용 테스트와 측정 도구의 관문이 GPU에서 확인한다)

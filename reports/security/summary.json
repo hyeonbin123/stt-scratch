@@ -220,5 +220,72 @@
    "risk": "Informational (Medium)",
    "count": 2
   }
- ]
+ ],
+ "recheck_2026_10_18": {
+  "reason": "service defaults changed after the post-Stage-7 follow-up (rule change 26): step path auto (GPU graph, CPU fast), endpoint second pass, rule2 0.8 s",
+  "server_info": {
+   "step_path": "graph",
+   "final_pass": "full",
+   "rule2_s": 0.8,
+   "device": "cuda",
+   "warm_up_s": 18.13
+  },
+  "zap": {
+   "baseline": [
+    {
+     "alert": "Modern Web Application",
+     "risk": "Informational (Medium)",
+     "count": 1
+    },
+    {
+     "alert": "Non-Storable Content",
+     "risk": "Informational (Medium)",
+     "count": 3
+    }
+   ],
+   "api": [
+    {
+     "alert": "Unexpected Content-Type was returned",
+     "risk": "Low (High)",
+     "count": 2
+    },
+    {
+     "alert": "A Client Error response code was returned by the server",
+     "risk": "Informational (High)",
+     "count": 9
+    },
+    {
+     "alert": "Non-Storable Content",
+     "risk": "Informational (Medium)",
+     "count": 2
+    }
+   ]
+  },
+  "bandit": {
+   "high": 0,
+   "medium": 0,
+   "low": 36,
+   "by_test": {
+    "B101 LOW": 5,
+    "B105 LOW": 4,
+    "B106 LOW": 3,
+    "B107 LOW": 2,
+    "B311 LOW": 5,
+    "B404 LOW": 5,
+    "B603 LOW": 8,
+    "B607 LOW": 4
+   }
+  },
+  "pip_audit": {
+   "packages_exported": 73,
+   "vulnerable": [
+    "setuptools 81.0.0 PYSEC-2026-3447 (fix 83.0.0)",
+    "torch 2.11.0 PYSEC-2025-194 (fix 2.13.0; audited as the PyPI version)"
+   ]
+  },
+  "gitleaks": {
+   "commits": 59,
+   "leaks": 0
+  }
+ }
 }

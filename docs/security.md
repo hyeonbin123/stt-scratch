@@ -30,6 +30,15 @@
 
 **gitleaks**: 커밋 51개, 약 32 MB에서 비밀 정보 0건.
 
+## 재점검 (2026-10-18, 서비스 기본값 변경 뒤)
+
+7단계 뒤 후속 측정(`docs/experiments.md` 규칙 변경 26)의 판정으로 서버 기본값이 바뀌어(인코더 step 경로 auto = GPU에서 CUDA Graph, 끝점 뒤 전체 문맥 2차 패스, rule2 0.8 s) 같은 도구로 다시 점검했다. 대상은 새 기본값으로 띄운 서버(GPU, `/info`: step_path graph, final_pass full, rule2 0.8 s)다. HTTP 경로·보안 헤더·Origin 검사는 바뀌지 않았고(WebSocket 이벤트 메시지에 `final_pass_ms` 필드 하나가 더해짐), 바뀐 것은 세션 안의 인식 계산과 서버 기본값이다. 새 기본값으로 dev_H 5발화를 WebSocket으로 보내 자막이 나오는 것도 확인했다.
+
+- **OWASP ZAP 2.17.0**: 기본 스캔 Medium·Low 0건(정보 2건: 캐시 금지 응답, 자바스크립트 페이지), API 스캔 Low 1건(루트 페이지 `/`의 "Unexpected Content-Type", 10-14와 같은 오탐)·정보 2건. 보고서 `reports/security/zap-{baseline,api}-2026-10-18.md`
+- **bandit 1.9.4**: High·Medium 0건. Low 36건: 이전과 같은 종류(`assert`, `random`, 고정 인자 `subprocess`)에 측정 도구 `scripts/followup.py`의 고정 인자 하위 프로세스(`git`, `nvidia-smi`, `powershell`; B404·B603·B607)와, 이름에 'pass'가 든 옵션 값 `final_pass="full"/"none"`을 하드코딩된 비밀번호로 오인한 B105·B106·B107(비밀 정보 아님)이 더해졌다
+- **pip-audit 2.10.1**: `uv export` 73개 패키지(미사용 `datasets`·`sentencepiece` 제거 뒤). 알려진 취약점은 10-14와 같은 두 가지(setuptools 81.0.0, torch 2.11.0을 PyPI 버전으로 따로 점검)이고 이 프로젝트의 사용 방식에는 해당하지 않는다(위 설명 그대로)
+- **gitleaks 8.30.1**: 커밋 59개, 약 33 MB에서 비밀 정보 0건
+
 ## 다시 돌리는 방법
 
 ```bash

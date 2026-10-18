@@ -203,3 +203,16 @@ def test_server_passes_the_followup_options(tmp_path) -> None:
                 break
     finals = [m for m in got if m["type"] == "final"]
     assert finals and all("final_pass_ms" in m for m in finals)
+
+
+# 확인: 명령행 서버의 기본값이 후속 측정 판정의 구성이다(step 경로 auto → GPU graph·CPU fast, 2차 패스 full,
+# rule2 0.8 s). build_app의 기본값은 측정·테스트가 쓰는 원래 동작(eager·none)으로 둔다. 왜: 판정한 구성과
+# 실제로 뜨는 서버가 어긋나지 않게 고정한다(docs/experiments.md 규칙 변경 26 결과).
+def test_server_cli_defaults_follow_the_registered_verdicts() -> None:
+    from stt_scratch.service import server
+
+    args = server.build_parser().parse_args([])
+    assert (args.step_path, args.final_pass, args.rule2) == ("auto", "full", 0.8)
+    assert server.resolve_step_path("auto", "cuda") == "graph"
+    assert server.resolve_step_path("auto", "cpu") == "fast"
+    assert server.resolve_step_path("eager", "cuda") == "eager"

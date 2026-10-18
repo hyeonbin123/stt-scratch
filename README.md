@@ -22,6 +22,7 @@
 
 - 같은 Zeroth 공식 test에서 whisper-large-v3-turbo는 제로샷 4.48 %, LoRA 파인튜닝 1.96 %다(별도 프로젝트 whisper-ko-ft, 같은 채점 정규화). 3.67 %는 그 사이(등록 가설 H7.1 충족)지만, Zeroth test 문장 대부분이 학습 세트에도 있고 학습 세트에 있는 문장(1.85 %)과 처음 보는 문장(16.01 %)의 격차가 커서 문장 암기와 일관된다. 처음 보는 문장에서는 15~16 %다
 - 스트리밍 서비스(dev 측정): 실제 캐시 스트리밍 CER은 simulated와 0.03포인트 안, 패킷 송신 → 부분 자막 p50 62 ms(로컬, 청크를 모으는 시간 제외), 끝점 확정 EP50 1.3 s, 청크당 계산 p50 62 ms(GPU) / 44 ms(CPU 1스레드), 10분 길이 오디오에서 계산 시간·메모리 증가 없음. GPU 계산 p90 ≤ 50 ms 가설(H6.2)은 미충족(63 ms; 연산 수가 많아 커널 실행 호출이 병목인 것으로 보임)
+- 7단계 뒤 후속 측정(dev 전용, 사전 등록, 다른 프로그램이 GPU를 쓰던 부하 조건)으로 서비스 기본값을 바꿨다: 끝점 뒤 같은 모델의 전체 문맥 2차 패스가 확정 자막 CER을 dev_mix 26.86 → 22.85 %, dev_H 18.75 → 16.01 %로 낮췄고(2차 패스 GPU p90 55 ms), 캐시를 유지한 채 끝점 묵음을 0.8 s로 줄여 EP50 0.9 s, 기존 경로와 비트 단위로 같은 출력을 내는 CUDA Graph step으로 GPU 청크 계산 p90 72.5 → 43.0 ms(캐시가 찬 정상 상태 8.5 ms). 봉인 test로는 확인하지 않은 수치이고 봉인 수치는 위 표 그대로다
 - 학습: 공개 데이터 51.8 h, RTX 2080 Ti 한 장, 실험 전체 GPU 약 65 h(단계별 기록의 합, 추정 포함; 최종 모델은 3단계 (a) 100 epoch + 4단계 TrimTail 15 epoch 이어 학습). fp16 수치 발산은 규칙 변경 13(SpecAugment 커리큘럼·QK-norm) 뒤 0회
 
 ## 설치
@@ -79,9 +80,13 @@ uv run python scripts/followup.py gate   # after Stage 7, dev only: gate, timing
 uv run python -m stt_scratch.service.server
 ```
 
-기본값은 6단계에서 정한 구성이다: 최종 모델 `outputs/stage4/trimtail/avg10.pt`, 320 ms 청크, 좌측 문맥 128프레임(5.12 s), GPU fp16 autocast, 토큰 뒤 묵음 1.2 s 끝점, 끝점 뒤 인코더 캐시 유지. 7단계 뒤 후속 옵션(`docs/experiments.md` "7단계 뒤 후속 측정", 규칙 변경 26)으로 `--step-path fast|graph`(같은 출력으로 연산 수를 줄인 인코더 step, graph는 정상 상태 step의 CUDA Graph)와 `--final-pass full`(끝점에서 세그먼트를 같은 모델의 전체 문맥으로 다시 디코딩해 확정 자막으로 씀)이 있다. 등록한 dev 측정의 판정 전까지 기본값은 각각 eager·none이다. 시작할 때 부분 청크 길이마다 한 번씩 예열한다(약 8 s). 보안 점검(OWASP ZAP·bandit·pip-audit·gitleaks, 결과와 고친 것)은 `docs/security.md`. 브라우저에서 `http://127.0.0.1:8765/`를 열면 마이크 입력을 320 ms마다 보내고 부분 자막(수정 없이 덧붙기만 함)과 끝점으로 확정된 세그먼트를 보여 준다. 프로토콜은 `src/stt_scratch/service/server.py` 머리말에 있다. 인증이 없으므로 로컬 데모용이다.
+기본값은 6단계에서 정한 구성에 7단계 뒤 후속 측정(`docs/experiments.md` "7단계 뒤 후속 측정", 규칙 변경 26)의 판정을 더한 것이다: 최종 모델 `outputs/stage4/trimtail/avg10.pt`(12층), 320 ms 청크, 좌측 문맥 128프레임(5.12 s), GPU fp16 autocast, 토큰 뒤 묵음 0.8 s 끝점, 끝점 뒤 인코더 캐시 유지, 끝점에서 세그먼트를 같은 모델의 전체 문맥으로 다시 디코딩한 확정 자막(`--final-pass full`; `none`이면 6단계까지의 1-pass), 인코더 step 경로 `--step-path auto`(GPU는 정상 상태 step을 CUDA Graph로 재생하는 graph, CPU는 연산 수를 줄인 fast; 둘 다 6·7단계에 쓴 eager 경로와 출력이 비트 단위로 같음을 dev_H 전수로 확인). 시작할 때 부분 청크 길이·2차 패스 길이 묶음마다 한 번씩 예열하고 CUDA Graph를 캡처한다. 보안 점검(OWASP ZAP·bandit·pip-audit·gitleaks, 결과와 고친 것)은 `docs/security.md`. 브라우저에서 `http://127.0.0.1:8765/`를 열면 마이크 입력을 320 ms마다 보내고 부분 자막(320 ms 스트리밍, 덧붙기만 함)과 끝점으로 확정된 세그먼트(2차 패스 결과가 부분 자막을 대체)를 보여 준다. 프로토콜은 `src/stt_scratch/service/server.py` 머리말에 있다. 인증이 없으므로 로컬 데모용이다.
 
-6단계 측정(dev, `docs/experiments.md` "6단계 결과"): 실제 캐시 스트리밍 CER은 simulated와 0.03포인트 안, 청크당 계산 p50 약 62 ms(GPU) / 44 ms(CPU 1스레드), 패킷 송신 → 부분 자막 p50 62 ms(로컬, 청크를 모으는 시간 제외), 끝점 확정 EP50 1.3 s, 10분 길이 오디오를 한 세션으로 처리했을 때(실시간이 아니라 약 2분에 처리) 청크 계산 시간·메모리 증가 없음. 실시간 클라이언트로 지연을 재려면:
+6단계 측정(dev, `docs/experiments.md` "6단계 결과"): 실제 캐시 스트리밍 CER은 simulated와 0.03포인트 안, 청크당 계산 p50 약 62 ms(GPU) / 44 ms(CPU 1스레드), 패킷 송신 → 부분 자막 p50 62 ms(로컬, 청크를 모으는 시간 제외), 끝점 확정 EP50 1.3 s, 10분 길이 오디오를 한 세션으로 처리했을 때(실시간이 아니라 약 2분에 처리) 청크 계산 시간·메모리 증가 없음.
+
+후속 측정(dev, 2026-10-18, 다른 프로그램이 GPU 3D 엔진을 약 40~49 % 쓰던 부하 조건; `reports/followup/summary.md`): 세션(발화 뒤 잡음 3 s, 캐시 유지, rule2 0.8 s)의 확정 자막 CER_ns는 1-pass 대비 dev_mix 26.86 → 22.85 %(−4.02, 95 % −4.55 ~ −3.50), dev_H 18.75 → 16.01 %, 2차 패스 계산 GPU p50/p90 50 / 55 ms·CPU 1스레드 123 / 195 ms, EP50/EP90 905 / 1,065 ms(1.2 s일 때 1,295 / 1,465 ms). 확정 자막은 텍스트가 있는 세그먼트의 약 96 %에서 부분 자막과 다르다(부분 자막을 고쳐 씀). 청크당 계산 p50/p90은 GPU eager 64.7 / 72.5 ms → graph 38.1 / 43.0 ms(정상 상태 7.9 / 8.5 ms), CPU 1스레드 eager 46.8 / 51.3 → fast 40.3 / 44.4 ms. 6층 조기 종료는 보고만 했다(dev_mix 차이 없음, dev_H 14.5 % vs 18.8 %; 서비스는 봉인 test로 잰 12층 그대로).
+
+실시간 클라이언트로 지연을 재려면:
 
 ```bash
 uv run python scripts/stream_client.py --manifest dev_h --limit 50 --name client-dev_h-mine   # server running
