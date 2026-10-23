@@ -1,0 +1,167 @@
+{
+ "note": "post-hoc analysis of the saved sealed-test hypotheses against a per-utterance anchor report; no new decoding, not a verdict; H7.1, its anchors and the sealed numbers are unchanged",
+ "hypotheses": "reports/final/test_zeroth-full.hyps.jsonl",
+ "metric": "CER_ns (score_ns, the same normalization as whisper-ko-ft) on the same utterances",
+ "bootstrap": {
+  "samples": 1000,
+  "seed": 0,
+  "level": 0.95,
+  "units": "utterance; speaker cluster (speaker of the test_zeroth manifest)",
+  "order": "pairs sorted by the original Zeroth id; speakers in order of first appearance"
+ },
+ "id_join": {
+  "files": [
+   "test-00000-of-00001.parquet"
+  ],
+  "rule": "zeroth/test/<n> is row n of the Zeroth-Korean test parquet files read in name order",
+  "checks": "speaker and normalized transcript of every row equal the manifest; the join is one-to-one; the normalized references of every pair are identical",
+  "utterances": 457
+ },
+ "sources": {
+  "anchor_report": {
+   "repository": "whisper-ko-ft",
+   "path": "reports/whisper-large-v3-turbo/zeroth-test.json",
+   "commit": "5368c45974efec90429f02d8f4ae7c801823ab91",
+   "uncommitted_changes": false,
+   "sha256": "bf6931faaeeaf2647102a88d4e37a8a65841b5742b9738bf312a12438b5cbf2c",
+   "model": "openai/whisper-large-v3-turbo",
+   "adapter": null,
+   "reported_error_rate": 0.04479,
+   "hypotheses_with_digit": 73
+  },
+  "digit_list": {
+   "repository": "whisper-ko-ft",
+   "path": "reports/digit_utterances/zeroth-test.json",
+   "commit": "5368c45974efec90429f02d8f4ae7c801823ab91",
+   "uncommitted_changes": false,
+   "sha256": "ea8ff50c09ed0b3a36afc703e6625d938ed474fb1880346b478a5544425354d9",
+   "rule": "either base model's hypothesis contains [0-9]",
+   "per_model": {
+    "whisper-small": 140,
+    "whisper-large-v3-turbo": 73
+   },
+   "count": 142,
+   "definition": "fixed by whisper-ko-ft in its stage 1 from the hypotheses of its two base models and not changed afterwards; the Zeroth references spell numbers in Hangul"
+  }
+ },
+ "subsets": {
+  "all": {
+   "n": 457,
+   "speakers": 10,
+   "edits_ours": 707,
+   "edits_anchor": 864,
+   "length": 19288,
+   "rate_ours": 0.036654914973040235,
+   "rate_anchor": 0.04479469099958523,
+   "diff_ours_minus_anchor": -0.008139776026544997,
+   "diff_ci95": {
+    "utterance": [
+     -0.015391739285121187,
+     -0.001310143658410527
+    ],
+    "speaker": [
+     -0.01434280836877403,
+     -0.001972365091298238
+    ]
+   },
+   "diff_ci_excludes_zero": {
+    "utterance": true,
+    "speaker": true
+   }
+  },
+  "digit_list": {
+   "n": 142,
+   "speakers": 10,
+   "edits_ours": 239,
+   "edits_anchor": 446,
+   "length": 6591,
+   "rate_ours": 0.036261568805947504,
+   "rate_anchor": 0.06766803216507358,
+   "diff_ours_minus_anchor": -0.03140646335912608,
+   "diff_ci95": {
+    "utterance": [
+     -0.043846457598527844,
+     -0.01846396801027782
+    ],
+    "speaker": [
+     -0.0431512776953047,
+     -0.02191588360234382
+    ]
+   },
+   "diff_ci_excludes_zero": {
+    "utterance": true,
+    "speaker": true
+   }
+  },
+  "excluding_digit_list": {
+   "n": 315,
+   "speakers": 10,
+   "edits_ours": 468,
+   "edits_anchor": 418,
+   "length": 12697,
+   "rate_ours": 0.03685910057493896,
+   "rate_anchor": 0.032921162479325826,
+   "diff_ours_minus_anchor": 0.003937938095613137,
+   "diff_ci95": {
+    "utterance": [
+     -0.003935923027627094,
+     0.012485312404317515
+    ],
+    "speaker": [
+     -0.00209109285161975,
+     0.010152480397092954
+    ]
+   },
+   "diff_ci_excludes_zero": {
+    "utterance": false,
+    "speaker": false
+   },
+   "split_by_train_sentence": {
+    "sentence_in_train": {
+     "n": 276,
+     "rate": 0.02072306450165964,
+     "ci": [
+      0.01294078363788428,
+      0.03207823025790301
+     ],
+     "edits": 231,
+     "length": 11147
+    },
+    "sentence_not_in_train": {
+     "n": 39,
+     "rate": 0.1529032258064516,
+     "ci": [
+      0.1262503656821515,
+      0.1794733742183669
+     ],
+     "edits": 237,
+     "length": 1550
+    }
+   }
+  },
+  "excluding_anchor_digit_hypotheses": {
+   "n": 384,
+   "speakers": 10,
+   "edits_ours": 574,
+   "edits_anchor": 500,
+   "length": 15766,
+   "rate_ours": 0.036407459089179244,
+   "rate_anchor": 0.031713814537612586,
+   "diff_ours_minus_anchor": 0.004693644551566657,
+   "diff_ci95": {
+    "utterance": [
+     -0.002222221807486761,
+     0.011823512962593175
+    ],
+    "speaker": [
+     -0.0003337296362269486,
+     0.010132668882240625
+    ]
+   },
+   "diff_ci_excludes_zero": {
+    "utterance": false,
+    "speaker": false
+   }
+  }
+ }
+}

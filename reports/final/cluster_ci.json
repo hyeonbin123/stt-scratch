@@ -1,0 +1,280 @@
+{
+ "note": "post-hoc supplementary intervals from saved hypotheses; no new decoding; the registered utterance-level intervals, recorded numbers and verdicts are unchanged",
+ "metric": "CER_ns (score_ns) on hangul-only utterances",
+ "bootstrap": {
+  "samples": 1000,
+  "seed": 0,
+  "level": 0.95,
+  "method": "percentile; clusters drawn with replacement using cluster totals of edits and reference characters; utterances in the order of the registered report, clusters in order of first appearance",
+  "check": "the utterance column equals the intervals recorded in reports/final/test_*.json and reports/followup/session.json"
+ },
+ "cluster_keys": {
+  "utterance": "each utterance is its own cluster (the registered bootstrap)",
+  "sentence": "Zeroth: normalize_score(reference); FLEURS: <sentence> of fleurs/<split>/<sentence>/<n>",
+  "speaker": "Zeroth: speaker id; CV22: client_id",
+  "speaker_or_sentence": "dev_mix: CV22 utterances by client_id, FLEURS utterances by sentence id"
+ },
+ "sealed": {
+  "test_zeroth": {
+   "full": {
+    "hypotheses": "reports/final/test_zeroth-full.hyps.jsonl",
+    "subset": "hangul_only",
+    "n": 457,
+    "rate": 0.036654914973040235,
+    "edits": 707,
+    "length": 19288,
+    "clusters": {
+     "utterance": 457,
+     "sentence": 423,
+     "speaker": 10
+    },
+    "ci95": {
+     "utterance": [
+      0.029651220473191516,
+      0.0442203514651852
+     ],
+     "sentence": [
+      0.02940849967146895,
+      0.04416516518378263
+     ],
+     "speaker": [
+      0.02781108882127188,
+      0.04725504814437343
+     ]
+    }
+   },
+   "streaming": {
+    "hypotheses": "reports/final/test_zeroth-streaming.hyps.jsonl",
+    "subset": "hangul_only",
+    "n": 457,
+    "rate": 0.053504769805060144,
+    "edits": 1032,
+    "length": 19288,
+    "clusters": {
+     "utterance": 457,
+     "sentence": 423,
+     "speaker": 10
+    },
+    "ci95": {
+     "utterance": [
+      0.04553727080295645,
+      0.0625571768599952
+     ],
+     "sentence": [
+      0.04552767655981218,
+      0.06248800617782835
+     ],
+     "speaker": [
+      0.04219176217245602,
+      0.06669218151934989
+     ]
+    }
+   }
+  },
+  "test_h": {
+   "full": {
+    "hypotheses": "reports/final/test_h-full.hyps.jsonl",
+    "subset": "hangul_only",
+    "n": 1280,
+    "rate": 0.15547723160434257,
+    "edits": 8249,
+    "length": 53056,
+    "clusters": {
+     "utterance": 1280,
+     "sentence": 167,
+     "speaker": 103
+    },
+    "ci95": {
+     "utterance": [
+      0.15089598103830304,
+      0.16023371394791913
+     ],
+     "sentence": [
+      0.14369045360962146,
+      0.1674301907360243
+     ],
+     "speaker": [
+      0.14598537172744402,
+      0.16492083507965402
+     ]
+    }
+   },
+   "streaming": {
+    "hypotheses": "reports/final/test_h-streaming.hyps.jsonl",
+    "subset": "hangul_only",
+    "n": 1280,
+    "rate": 0.18082780458383596,
+    "edits": 9594,
+    "length": 53056,
+    "clusters": {
+     "utterance": 1280,
+     "sentence": 167,
+     "speaker": 103
+    },
+    "ci95": {
+     "utterance": [
+      0.1756139061418023,
+      0.18548029847146075
+     ],
+     "sentence": [
+      0.16816425840707752,
+      0.19428109744750047
+     ],
+     "speaker": [
+      0.17019423678465784,
+      0.191277334427427
+     ]
+    }
+   }
+  },
+  "test_fleurs": {
+   "full": {
+    "hypotheses": "reports/final/test_fleurs-full.hyps.jsonl",
+    "subset": "hangul_only",
+    "n": 257,
+    "rate": 0.14621893178212586,
+    "edits": 1659,
+    "length": 11346,
+    "clusters": {
+     "utterance": 257,
+     "sentence": 175
+    },
+    "ci95": {
+     "utterance": [
+      0.13465161961042535,
+      0.15886108343644958
+     ],
+     "sentence": [
+      0.13290878455538083,
+      0.16019417475728157
+     ]
+    }
+   },
+   "streaming": {
+    "hypotheses": "reports/final/test_fleurs-streaming.hyps.jsonl",
+    "subset": "hangul_only",
+    "n": 257,
+    "rate": 0.1774193548387097,
+    "edits": 2013,
+    "length": 11346,
+    "clusters": {
+     "utterance": 257,
+     "sentence": 175
+    },
+    "ci95": {
+     "utterance": [
+      0.16587382462234593,
+      0.19072540824822654
+     ],
+     "sentence": [
+      0.1631065914701274,
+      0.19169211130856234
+     ]
+    }
+   }
+  },
+  "test_cv": {
+   "full": {
+    "hypotheses": "reports/final/test_cv-full.hyps.jsonl",
+    "subset": "hangul_only",
+    "n": 472,
+    "rate": 0.2818798848210613,
+    "edits": 2741,
+    "length": 9724,
+    "clusters": {
+     "utterance": 472,
+     "speaker": 74
+    },
+    "ci95": {
+     "utterance": [
+      0.26619376977070286,
+      0.29642418276914784
+     ],
+     "speaker": [
+      0.24742490522202995,
+      0.3181902855650499
+     ]
+    }
+   },
+   "streaming": {
+    "hypotheses": "reports/final/test_cv-streaming.hyps.jsonl",
+    "subset": "hangul_only",
+    "n": 472,
+    "rate": 0.3335047305635541,
+    "edits": 3243,
+    "length": 9724,
+    "clusters": {
+     "utterance": 472,
+     "speaker": 74
+    },
+    "ci95": {
+     "utterance": [
+      0.31628522023191624,
+      0.34917470492146213
+     ],
+     "speaker": [
+      0.2986024902015046,
+      0.3701334249691914
+     ]
+    }
+   }
+  }
+ },
+ "paired": {
+  "p1_dev_mix_rule2_0.8": {
+   "set": "dev_mix",
+   "a": "reports/followup/hyps/dev_mix-session-rule2_0.8-final_pass.jsonl",
+   "b": "reports/followup/hyps/dev_mix-session-rule2_0.8-stream.jsonl",
+   "a_minus_b": "final pass after the endpoint - 1-pass stream",
+   "subset": "hangul_only",
+   "n": 633,
+   "rate_a": 0.22846938187683621,
+   "rate_b": 0.2686214643700674,
+   "diff_a_minus_b": -0.040152082493231184,
+   "clusters": {
+    "utterance": 633,
+    "speaker_or_sentence": 97
+   },
+   "ci95": {
+    "utterance": [
+     -0.04546842039136984,
+     -0.0350212422179484
+    ],
+    "speaker_or_sentence": [
+     -0.048815147565883156,
+     -0.03004843659996709
+    ]
+   }
+  },
+  "p1_dev_h_rule2_0.8": {
+   "set": "dev_h",
+   "a": "reports/followup/hyps/dev_h-session-rule2_0.8-final_pass.jsonl",
+   "b": "reports/followup/hyps/dev_h-session-rule2_0.8-stream.jsonl",
+   "a_minus_b": "final pass after the endpoint - 1-pass stream",
+   "subset": "hangul_only",
+   "n": 1113,
+   "rate_a": 0.16014695445246943,
+   "rate_b": 0.18749217217050057,
+   "diff_a_minus_b": -0.02734521771803114,
+   "clusters": {
+    "utterance": 1113,
+    "sentence": 151,
+    "speaker": 102
+   },
+   "ci95": {
+    "utterance": [
+     -0.029829986587859292,
+     -0.024750284996725
+    ],
+    "sentence": [
+     -0.03104339009096174,
+     -0.023605028043022606
+    ],
+    "speaker": [
+     -0.03010500467828727,
+     -0.02477815403452624
+    ]
+   }
+  }
+ }
+}

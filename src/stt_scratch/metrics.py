@@ -3,16 +3,20 @@
 발화 하나의 채점(편집 수·정답 글자 수)과, 발화 묶음의 CER·부트스트랩 95 % 구간을 계산한다.
 CER_ns("no space", 공백 제외)는 whisper-ko-ft의 채점 정규화를 써서 그 프로젝트 수치와 비교할 수 있게 하고,
 CER_ws("with space", 공백 포함)는 공백도 글자로 센다(KsponSpeech 관례).
+같은 문장·화자의 발화를 한 묶음(군집)으로 다시 뽑는 사후 보조 구간(cluster_interval·
+cluster_difference_interval)도 여기 있다. 등록 규칙의 구간은 발화 단위 그대로다.
 """
 
 # [규칙] CER은 발화별 비율의 평균이 아니라 '묶음 전체 편집 수 합 ÷ 정답 글자 수 합'이다. 구간은 발화 단위
 # 부트스트랩 1,000회(seed 0), 두 모델 비교는 같은 발화 표본을 다시 뽑는 짝지은 구간이다(docs/experiments.md
 # "지표"). 모든 보고 수치에 이 구간을 함께 적는다.
 # [연결] evaluate.score·summarize가 평가 결과를, scripts/compare_runs.py가 짝지은 비교를,
-# scripts/sealed_breakdown.py가 봉인 test 사후 분할을 이 함수들로 계산한다.
+# scripts/sealed_breakdown.py가 봉인 test 사후 분할과 whisper 앵커 짝 비교를, scripts/cluster_ci.py가 군집
+# 보조 구간을 이 함수들로 계산한다.
 
 from __future__ import annotations
 
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
 
 # jiwer: 글자 단위 편집 거리 정렬(치환·삭제·삽입 수)을 검증된 구현으로 쓴다. numpy: 부트스트랩 재표본을 벡터
@@ -94,6 +98,65 @@ def difference_interval(edits_a: np.ndarray, edits_b: np.ndarray, lengths: np.nd
     deltas = edits_a[picks].sum(axis=1) / totals - edits_b[picks].sum(axis=1) / totals
     low, high = np.percentile(deltas, [2.5, 97.5])
     return float(low), float(high)
+
+
+# 발화별 값 배열들을 군집별 합으로 접는다. 군집 번호는 키가 처음 나온 순서다(정렬 순서가 아니다).
+# 그래서 키가 모두 다르면 군집 j = 발화 j라 합이 원래 배열과 같고, 아래 두 함수가 등록 함수
+# (interval·difference_interval)와 비트 단위로 같은 값을 낸다. 정수 배열은 정수 그대로 더한다
+# (np.bincount의 weights는 float64로 바꾸므로 쓰지 않는다).
+# 입력: 같은 길이의 1차원 배열들과, 발화마다 하나씩인 군집 키(해시 가능한 값, 예: 화자 id·정규화 문장).
+# 출력: 군집별 합 배열들(입력 순서대로).
+# 주의: 키가 None이면 서로 다른 발화(예: 화자 정보가 없는 FLEURS 발화 전부)가 조용히 한 군집으로 묶이므로
+# 거부한다. 발화가 없거나 길이가 다르면 ValueError.
+def _cluster_totals(arrays: Sequence[np.ndarray], groups: Sequence[Hashable]) -> list[np.ndarray]:
+    arrays = [np.asarray(a) for a in arrays]
+    count = len(groups)
+    if count == 0:
+        raise ValueError("no utterances to resample")
+    if any(a.ndim != 1 or len(a) != count for a in arrays):
+        raise ValueError(f"every array needs one value per utterance ({count} cluster keys)")
+    order: dict[Hashable, int] = {}
+    index = np.empty(count, dtype=np.int64)
+    for i, key in enumerate(groups):
+        if key is None:
+            raise ValueError(f"cluster key of utterance {i} is None")
+        index[i] = order.setdefault(key, len(order))
+    totals = []
+    for a in arrays:
+        out = np.zeros(len(order), dtype=a.dtype)
+        np.add.at(out, index, a)
+        totals.append(out)
+    return totals
+
+
+# 군집(문장·화자 등) 단위 부트스트랩: 군집마다 편집 합·글자 합을 만든 뒤 군집 인덱스를 복원 추출한다.
+# CER은 '편집 합 ÷ 글자 합'이라 군집을 통째로 다시 뽑는 것은 군집 합 배열을 발화처럼 다시 뽑는 것과
+# 같으므로, 군집 합에 등록 함수를 그대로 쓴다(같은 seed 0 Generator, 같은 (1,000, 군집 수) 표).
+# 왜: 같은 문장을 여러 화자가 읽거나 소수 화자가 많은 발화를 내는 평가 세트에서 발화 단위 구간은 '같은
+# 문장·화자에서 발화만 다시 뽑을 때'의 변동이라, 다른 문장·화자로 일반화할 때의 불확실성을 작게 보인다.
+# 이 구간은 등록 규칙(발화 단위)을 바꾸지 않는 사후 보조 지표다(docs/experiments.md 7단계 결과의 사후
+# 보조 구간).
+# 주의: 군집이 적으면(예: 화자 10명) 백분위 끝값의 재표본 오차가 커서, 같은 seed라도 발화·군집 순서가
+# 바뀌면 소수 둘째 자리(%)가 달라질 수 있다. 호출하는 쪽이 발화 순서를 고정해야 한다.
+def cluster_interval(
+    edits: np.ndarray, lengths: np.ndarray, groups: Sequence[Hashable]
+) -> tuple[float, float]:
+    """군집을 재표본해 구한 묶음 전체 비율의 95 % 부트스트랩 구간. 군집 = 발화이면 interval과 같다."""
+    cluster_edits, cluster_lengths = _cluster_totals((edits, lengths), groups)
+    return interval(cluster_edits, cluster_lengths)
+
+
+# 두 시스템의 짝지은 차이를 군집 단위로 다시 뽑는다. 두 시스템에 같은 군집 표본을 쓰므로 군집 난이도는
+# 차이에서 상쇄되고, 군집마다 다른 '차이'의 변동만 남는다.
+def cluster_difference_interval(
+    edits_a: np.ndarray, edits_b: np.ndarray, lengths: np.ndarray, groups: Sequence[Hashable]
+) -> tuple[float, float]:
+    """같은 발화 집합에서 rate(a) − rate(b)의 군집 단위 95 % 구간.
+
+    군집 = 발화이면 difference_interval과 같다.
+    """
+    cluster_a, cluster_b, cluster_lengths = _cluster_totals((edits_a, edits_b, lengths), groups)
+    return difference_interval(cluster_a, cluster_b, cluster_lengths)
 
 
 # 반환: {발화 수, CER, 95 % 구간, 편집 합, 글자 합}. 빈 목록이면 비율·구간 없이 0을 돌려준다.
