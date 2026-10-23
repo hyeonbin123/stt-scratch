@@ -9,7 +9,7 @@
 
 ## 결과 (봉인 test, 2026-10-14 1회)
 
-최종 모델 `outputs/stage4/trimtail/avg10.pt`, greedy, CER_ns(공백 제외 문자 오류율, 한글 전용 발화) %. 스트리밍은 서비스 구성(320 ms 청크, 좌측 5.12 s)의 실제 캐시 스트리밍. 괄호는 95 % 부트스트랩 구간. 전체 표·CER_ws·출력 불가능 문자 하한은 `docs/experiments.md` "7단계 결과"와 `reports/final/sealed_test.md`.
+최종 모델 `outputs/stage4/trimtail/avg10.pt`, greedy, CER_ns(공백 제외 문자 오류율, 한글 전용 발화) %. 스트리밍은 서비스 구성(320 ms 청크, 좌측 5.12 s)의 실제 캐시 스트리밍. 괄호는 발화 단위 95 % 부트스트랩 구간(2026-10-24 추가: 같은 화자의 발화를 한 묶음으로 다시 뽑은 군집 구간은 모든 행에서 이보다 넓다. 화자 정보가 없는 FLEURS는 같은 문장으로 묶는다. 사후 보조, `reports/final/cluster_ci.json`). 전체 표·CER_ws·출력 불가능 문자 하한은 `docs/experiments.md` "7단계 결과"와 `reports/final/sealed_test.md`.
 
 | test 세트 | full | 스트리밍 320 ms |
 |---|---|---|
@@ -21,6 +21,7 @@
 | Common Voice 22 한국어 test | 28.19 (26.62-29.64) | 33.35 (31.63-34.92) |
 
 - 같은 Zeroth 공식 test에서 whisper-large-v3-turbo는 제로샷 4.48 %, LoRA 파인튜닝 1.96 %다(별도 프로젝트 whisper-ko-ft, 같은 채점 정규화). 3.67 %는 그 사이(등록 가설 H7.1 충족)지만, Zeroth test 문장 대부분이 학습 세트에도 있고 학습 세트에 있는 문장(1.85 %)과 처음 보는 문장(16.01 %)의 격차가 커서 문장 암기와 일관된다. 처음 보는 문장에서는 15~16 %다
+  - 2026-10-24 추가 확인(사후 분석, 새 디코딩 없음, `reports/final/zeroth_anchor_notation.json`): 채점 정규화는 같지만 Zeroth 정답은 숫자를 한글로 풀어 쓰고 whisper는 아라비아 숫자를 내서 그 표기 차이가 앵커 쪽 오류로 센다. whisper-ko-ft가 정한 숫자 발화 142개(whisper-small 또는 turbo 가설에 아라비아 숫자가 든 발화)를 빼면 turbo 제로샷 3.29 %, 이 모델 3.69 %(같은 발화 짝 차 +0.39포인트, 95 % −0.39 ~ +1.25)로, 숫자 표기가 걸리지 않는 발화에서는 제로샷과의 차이가 0과 구별되지 않는다. H7.1 판정(등록 지표의 점추정)과 앵커 값은 그대로다. 방법·민감도는 `docs/experiments.md` 7단계 결과
 - 스트리밍 서비스(dev 측정): 실제 캐시 스트리밍 CER은 simulated와 0.03포인트 안, 패킷 송신 → 부분 자막 p50 62 ms(로컬, 청크를 모으는 시간 제외), 끝점 확정 EP50 1.3 s, 청크당 계산 p50 62 ms(GPU) / 44 ms(CPU 1스레드), 10분 길이 오디오에서 계산 시간·메모리 증가 없음. GPU 계산 p90 ≤ 50 ms 가설(H6.2)은 미충족(63 ms; 연산 수가 많아 커널 실행 호출이 병목인 것으로 보임)
 - 7단계 뒤 후속 측정(dev 전용, 사전 등록, 다른 프로그램이 GPU를 쓰던 부하 조건)으로 서비스 기본값을 바꿨다: 끝점 뒤 같은 모델의 전체 문맥 2차 패스가 확정 자막 CER을 dev_mix 26.86 → 22.85 %, dev_H 18.75 → 16.01 %로 낮췄고(2차 패스 GPU p90 55 ms), 캐시를 유지한 채 끝점 묵음을 0.8 s로 줄여 EP50 0.9 s, 기존 경로와 비트 단위로 같은 출력을 내는 CUDA Graph step으로 GPU 청크 계산 p90 72.5 → 43.0 ms(캐시가 찬 정상 상태 8.5 ms). 봉인 test로는 확인하지 않은 수치이고 봉인 수치는 위 표 그대로다
 - 학습: 공개 데이터 51.8 h, RTX 2080 Ti 한 장, 실험 전체 GPU 약 65 h(단계별 기록의 합, 추정 포함; 최종 모델은 3단계 (a) 100 epoch + 4단계 TrimTail 15 epoch 이어 학습). fp16 수치 발산은 규칙 변경 13(SpecAugment 커리큘럼·QK-norm) 뒤 0회
@@ -51,7 +52,7 @@ uv run pytest -q
 uv run ruff format src scripts tests && uv run ruff check src scripts tests
 ```
 
-테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금), 후속 옵션(빠른 step 경로가 eager와 비트 단위로 같음, 2차 패스 = 세그먼트의 전체 문맥 디코딩)을 확인한다. CUDA가 없으면 fp16·CUDA Graph 테스트는 건너뛴다. GitHub Actions(`.github/workflows/ci.yml`)가 push마다 CPU에서 ruff와 pytest를 돈다.
+테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금), 후속 옵션(빠른 step 경로가 eager와 비트 단위로 같음, 2차 패스 = 세그먼트의 전체 문맥 디코딩), 봉인 test 사후 분석(군집이 발화이면 군집 부트스트랩이 등록 부트스트랩과 비트 단위로 같음, 저장된 보고서 재현, whisper 앵커와 짝지을 때 결합이 일대일이고 정답이 같아야 함; 실데이터가 필요한 재현 확인은 `data/raw`와 whisper-ko-ft 체크아웃이 없으면 건너뜀)을 확인한다. CUDA가 없으면 fp16·CUDA Graph 테스트는 건너뛴다. GitHub Actions(`.github/workflows/ci.yml`)가 push마다 CPU에서 ruff와 pytest를 돈다.
 
 ## 학습·평가
 
@@ -66,13 +67,15 @@ uv run python scripts/stage3.py --arms a,b,c,d --budget-hours 45
 uv run python scripts/stage4.py --start runA
 uv run python scripts/stage6.py grid --checkpoint outputs/stage4/trimtail/avg10.pt   # also h61, session, drift
 uv run python scripts/training_summary.py   # fp16 stability and GPU time of every run (final report)
+uv run python scripts/sealed_breakdown.py --anchor-report ../whisper-ko-ft/reports/whisper-large-v3-turbo/zeroth-test.json --digit-list ../whisper-ko-ft/reports/digit_utterances/zeroth-test.json
+uv run python scripts/cluster_ci.py
 uv run python -m stt_scratch.evaluate --checkpoint outputs/stage2/runA/avg10.pt --manifest dev_mix --chunk 8 --left 128 --streaming
 uv run python scripts/followup.py gate   # after Stage 7, dev only: gate, timing, exit6, session, final-cpu, summary
 ```
 
 `train.py`는 매 epoch `epochs.jsonl`에 dev CER과 dev CTC 손실을, `train.jsonl`에 손실·LR·GradScaler scale·GPU 메모리를 남기고 체크포인트를 저장한다. 발산 판정, 재개(`--resume`, 처방 대조), SpecAugment 커리큘럼(epoch 3부터), QK-norm은 `docs/experiments.md` "fp16 규칙"과 "규칙 변경"에 있다. Windows에서는 PyTorch 할당기 조각이 커져 GPU 메모리가 넘치지 않도록 `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.8,max_split_size_mb:256`과 `--cuda-memory-fraction 0.8`을 함께 쓴다.
 
-4단계 지연 측정의 기준 정렬은 Montreal Forced Aligner 3.4.3 + `korean_mfa` 3.0으로 만든다(`scripts/export_mfa_corpus.py`로 내보낸 뒤 `mfa align ... --g2p_model_path korean_mfa --single_speaker --output_format csv`; 한국어 토큰화에 `python-mecab-ko` 필요). 7단계 봉인 test(`scripts/stage7.py`)는 확인 플래그를 요구하고 한 번만 실행된다.
+4단계 지연 측정의 기준 정렬은 Montreal Forced Aligner 3.4.3 + `korean_mfa` 3.0으로 만든다(`scripts/export_mfa_corpus.py`로 내보낸 뒤 `mfa align ... --g2p_model_path korean_mfa --single_speaker --output_format csv`; 한국어 토큰화에 `python-mecab-ko` 필요). 7단계 봉인 test(`scripts/stage7.py`)는 확인 플래그를 요구하고 한 번만 실행된다. 봉인 test 사후 분석(저장된 가설만 읽음, 새 디코딩 없음)은 `scripts/sealed_breakdown.py`(학습 문장 여부 분할; whisper-ko-ft 발화별 보고서와 숫자 발화 목록을 주면 앵커 숫자 표기 분석도 하며, 행 번호 id를 원래 id로 잇는 데 `data/raw`의 Zeroth parquet가 필요)와 `scripts/cluster_ci.py`(문장·화자 군집 부트스트랩 보조 구간)다.
 
 ## 스트리밍 서비스 (6단계)
 
@@ -96,14 +99,16 @@ uv run python scripts/stream_client.py --summarize --name client-dev_h-mine
 ## 구조
 
 ```
-src/stt_scratch/   text(정규화·어휘), metrics(CER·부트스트랩), data(매니페스트·PCM 저장소·배치),
+src/stt_scratch/   text(정규화·어휘), metrics(CER·발화·군집 부트스트랩), data(매니페스트·PCM 저장소·배치),
                    model/(features, subsampling, attention, conv, conformer, ctc, decode, streaming),
                    train, evaluate, service/(endpoint, session, server)
 scripts/           데이터 내려받기·재고·준비, mel 통계, 벤치, 단계별 실행기(stage1~7), 체크포인트 평균,
-                   스트리밍 클라이언트, 진단(diag_*), 학습 요약, 7단계 뒤 후속 측정(followup)
+                   스트리밍 클라이언트, 진단(diag_*), 학습 요약, 7단계 뒤 후속 측정(followup),
+                   봉인 test 사후 분석(sealed_breakdown, cluster_ci)
 tests/             게이트 테스트(test_model), 전처리(test_prepare_data), 서비스(test_service),
                    4단계 지연 도우미(test_latency), 봉인 test 보호 장치(test_stage7_guards),
-                   빠른 step 경로·조기 종료(test_fast_streaming), 끝점 뒤 2차 패스(test_final_pass)
+                   빠른 step 경로·조기 종료(test_fast_streaming), 끝점 뒤 2차 패스(test_final_pass),
+                   사후 분석(test_sealed_breakdown, test_cluster_bootstrap)
 docs/              survey/(조사·결정), experiments.md(규칙·결과), plan.md, data.md, ai-verification.md, security.md
 manifests/         분할 매니페스트, 어휘, mel 통계 (커밋)
 reports/           단계별 측정 결과 (커밋)
