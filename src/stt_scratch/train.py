@@ -24,8 +24,10 @@ dev CTC 손실이 epoch 1 끝 값보다 낮지 않음. 발산한 런은 멈추�
 from __future__ import annotations
 
 # 표준 라이브러리 중 subprocess는 meta.json에 git 커밋 해시를 남기려고, os는 PYTORCH_CUDA_ALLOC_CONF 설정을
-# 기록하려고, random은 속도 교란·동적 청크·TrimTail용 시드 고정 난수에 쓴다.
+# 기록하고 체크포인트 임시 파일을 os.replace로 바꿔 넣으려고, contextlib는 실패한 저장의 임시 파일을 지울 때
+# 없어도 넘어가려고, random은 속도 교란·동적 청크·TrimTail용 시드 고정 난수에 쓴다.
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -197,6 +199,13 @@ def unique_path(path: Path) -> Path:
 # 체크포인트 한 개를 쓴다. 가중치뿐 아니라 옵티마이저·GradScaler 상태, epoch·step, config, 카운터, dev 손실
 # 이력, 난수 상태, 처방, dev 손실 규칙 적용 여부까지 넣어 재개가 '멈추지 않은 것과 같은 학습'이 되게 한다.
 # epoch_complete=False(발산·--max-steps로 epoch 도중 멈춤)인 체크포인트는 재개를 거부하는 표시다.
+# 원자적 쓰기: 같은 디렉터리의 임시 파일 <이름>.tmp에 다 쓴 뒤 os.replace로 바꿔 넣는다(같은 볼륨이면 Windows·
+# POSIX 모두 원자적 교체). 그래서 저장 도중 멈춰도(epoch 경계에서 멈추고 --resume하는 운영) 이전 last.pt는
+# 그대로 남고, 새 파일은 완전하거나 없다. 전에는 대상에 바로 써서 중단되면 last.pt가 깨진 zip으로 남아
+# --resume의 torch.load와 3·4단계 실행기의 completed_epochs가 예외로 멈췄다. 임시 파일 이름이 .pt로 끝나지
+# 않으므로 실행기의 `*.pt`·`epoch-*.pt` 검색에 잡히지 않는다. 쓰다 실패하면(예외·KeyboardInterrupt) 임시
+# 파일을 지우고 예외를 그대로 올린다. epochs.jsonl 요약 줄을 체크포인트보다 먼저 쓰는 순서와 재개 규칙(규칙
+# 변경 10·15)은 그대로다(tests/test_train_io.py).
 def save_checkpoint(
     path: Path,
     model,
@@ -214,24 +223,31 @@ def save_checkpoint(
     recipe=None,
     dev_rule_active=True,
 ):
-    torch.save(
-        {
-            "recipe": recipe,
-            "dev_loss_rule_active": dev_rule_active,
-            "model": model.state_dict(),
-            "opt": opt.state_dict(),
-            "scaler": scaler.state_dict(),
-            "epoch": epoch,
-            "step": step,
-            "config": asdict(cfg),
-            "epoch_complete": complete,
-            "divergence": divergence,
-            "counters": dict(counters),
-            "dev_loss": list(dev_loss),
-            "rng": rng_states(rng, device),
-        },
-        path,
-    )
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        torch.save(
+            {
+                "recipe": recipe,
+                "dev_loss_rule_active": dev_rule_active,
+                "model": model.state_dict(),
+                "opt": opt.state_dict(),
+                "scaler": scaler.state_dict(),
+                "epoch": epoch,
+                "step": step,
+                "config": asdict(cfg),
+                "epoch_complete": complete,
+                "divergence": divergence,
+                "counters": dict(counters),
+                "dev_loss": list(dev_loss),
+                "rng": rng_states(rng, device),
+            },
+            tmp,
+        )
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
 
 
 # main뿐 아니라 3·4단계 실행기가 같은 파서로 '이 명령이면 어떤 처방이 기록될지'를 계산하므로(expected_recipe)
