@@ -22,7 +22,7 @@ from stt_scratch.model.config import ModelConfig
 from stt_scratch.model.conformer import ChunkConformerCTC
 from stt_scratch.model.ctc import log_probs_fp32
 from stt_scratch.model.mask import ChunkSpec
-from stt_scratch.model.streaming import StreamingEncoder, autocast_weight_copy
+from stt_scratch.model.streaming import StreamingEncoder, StreamState, autocast_weight_copy
 
 # 좌측 문맥 16프레임 = 청크(4프레임) 4개라 다섯 번째 청크부터 정상 상태(고정 버퍼 step)가 된다.
 SPEC = ChunkSpec(4, 16)
@@ -183,3 +183,155 @@ def test_fast_paths_on_cuda_fp16(path: str) -> None:
     if path == "graph":
         stepper = streaming._static_stepper(StreamingEncoder(model, SPEC, path="graph"))
         assert stepper.graph is not None, stepper.graph_failed
+
+
+# ---- 긴 세션의 위치 재기준(streaming.REBASE_AT, streaming.rebase_positions) ----
+# 서버 기본값(끝점 뒤 캐시 유지)에서는 frames_seen이 연결 내내 커져 RoPE fp32 각도(위치 × 주파수)의 반올림
+# 오차가 함께 커진다. 그래서 step 앞에서 frames_seen이 임계(2^16프레임, 약 44분) 이상이면 청크 배수만큼
+# 당긴다. 수정 전에 이 작은 모델(CPU fp32)로 시작값만 바꿔 재 보면 0 시작 대비 최대 절대차가 2^16에서 5.5e-5,
+# 2^20에서 1.2e-3, 2^24에서 0.12였고, 재기준이 만드는 시작값 16(좌측 문맥)에서는 4.8e-7이었다. 그러므로
+# 아래 1e-4 비교는 2^24 경우에서만 재기준의 유무를 가르고, 2^16 경우는 당긴 양과 frames_seen 값의 단언이
+# 가른다. CPU bf16 autocast(CUDA fp16보다 거친 정밀도)에서는 시작값이 16이든 65,536이든 0 시작과의 차이가
+# 0.012~0.028이라 저정밀도 비교에는 5e-2를 쓴다.
+
+
+def run_from(enc: StreamingEncoder, mel: torch.Tensor, start: int) -> tuple[torch.Tensor, StreamState]:
+    """frames_seen을 start로 둔 새 상태로 mel 전체를 돌려 (이어 붙인 log-prob, 마지막 상태)를 돌려준다."""
+    state = enc.new_state()
+    state.frames_seen = start
+    return torch.cat(run(enc, mel, state)), state
+
+
+# rebase_positions가 돌려준 '당긴 양'을 step마다 기록하는 spy. StreamingEncoder.step이 모듈 전역 이름으로
+# 부르므로 monkeypatch로 바꿔 끼울 수 있고, 임계(REBASE_AT)는 원래 함수가 호출 시점의 전역값을 읽는다.
+def spy_rebase(monkeypatch) -> list[int]:
+    shifts: list[int] = []
+    original = streaming.rebase_positions
+
+    def spy(state, spec, threshold=None):
+        shifts.append(original(state, spec, threshold))
+        return shifts[-1]
+
+    monkeypatch.setattr(streaming, "rebase_positions", spy)
+    return shifts
+
+
+# 확인: 임계 미만 스트림(15청크 + 부분 청크)은 임계를 무한대로 둔 실행과 출력·frames_seen이 비트 단위로 같고
+# 당긴 양은 모두 0이다. 왜: 봉인 test·6단계·후속 측정은 발화마다 새 세션이고 10분 드리프트도 15,000프레임이라
+# 모두 임계 미만이므로, 이 변경이 기록 수치와 무관함을 코드로 고정한다.
+@pytest.mark.parametrize("path", ["eager", "fast", "graph"])
+def test_streams_below_the_rebase_threshold_are_bit_identical(path: str, monkeypatch) -> None:
+    model = make_model()
+    mel = random_mel(MEL_PER_CHUNK * 15 + 7, seed=3)
+    shifts = spy_rebase(monkeypatch)
+    with torch.no_grad():
+        out, state = run_from(StreamingEncoder(model, SPEC, path=path), mel, 0)
+        monkeypatch.setattr(streaming, "REBASE_AT", 1 << 62)
+        plain, s_plain = run_from(StreamingEncoder(model, SPEC, path=path), mel, 0)
+    assert torch.equal(out, plain)
+    assert state.frames_seen == s_plain.frames_seen
+    assert shifts == [0] * 32
+
+
+# 확인: 시작값이 임계 이상이면 재기준이 한 번 일어나(2^24는 첫 청크에서, 2^16 − 8청크는 캐시가 꽉 찬
+# 9번째 청크에서) 당긴 양은 '시작값 + k청크 − 좌측 문맥'(청크 배수)이고, 재기준 뒤 frames_seen은 좌측
+# 문맥(16)에서 다시 커지며, 세 경로가 비트 단위로 같은 값을 내고 0에서 시작한 eager 실행과 log-prob이
+# 1e-4 안이다. 왜: RoPE는 상대 위치이고 캐시는 회전 전 입력을 저장하므로 모든 위치를 같은 청크 배수만큼
+# 옮기는 것은 같은 계산이어야 하고, 세 경로가 같은 frames_seen 한 곳만 읽어야 경로 간 동일성이 유지된다.
+@pytest.mark.parametrize("start", [1 << 24, (1 << 16) - 8 * SPEC.chunk_size])
+def test_rebased_stream_matches_a_stream_started_at_zero(start: int, monkeypatch) -> None:
+    model = make_model()
+    mel = random_mel(MEL_PER_CHUNK * 15 + 7, seed=3)
+    shifts = spy_rebase(monkeypatch)
+    with torch.no_grad():
+        ref, s_ref = run_from(StreamingEncoder(model, SPEC), mel, 0)
+        outs, states, seen = {}, {}, {}
+        for path in streaming.PATHS:
+            shifts.clear()
+            outs[path], states[path] = run_from(StreamingEncoder(model, SPEC, path=path), mel, start)
+            seen[path] = list(shifts)
+    # 재기준이 일어나는 step k = frames_seen이 처음 임계에 이르는 청크 번호(시작값이 임계 이상이면 0).
+    k = max(0, -(-(streaming.REBASE_AT - start) // SPEC.chunk_size))
+    expected = [0] * 16
+    expected[k] = start + k * SPEC.chunk_size - SPEC.left_context
+    for path in streaming.PATHS:
+        assert seen[path] == expected, path
+        assert torch.equal(outs[path], outs["eager"]), path
+        assert states[path].frames_seen == s_ref.frames_seen + SPEC.left_context - k * SPEC.chunk_size
+    assert float((outs["eager"] - ref).abs().max()) <= 1e-4
+
+
+# 확인: 임계를 좌측 문맥의 2배(32프레임)로 낮추면 15청크 스트림에서 재기준이 두 번 일어나는데, 당긴 양은
+# 매번 청크 배수이고 당긴 뒤 frames_seen은 좌측 문맥 이상(키 위치가 음수가 되지 않음)이며, 모든 step 뒤
+# frames_seen이 청크 배수로 남아(graph 경로의 정상 상태 조건) 고정 버퍼 step이 재기준 사이에도 계속 쓰이고,
+# 출력은 재기준 없는 같은 경로 실행과 1e-4 안이다. 왜: 재기준이 반복돼도 frames_seen이 임계 근처에 머물며
+# 세 경로의 조건이 깨지지 않아야 한다.
+@pytest.mark.parametrize("path", ["eager", "fast", "graph"])
+def test_repeated_rebases_keep_the_chunk_grid_and_the_left_context(path: str, monkeypatch) -> None:
+    model = make_model()
+    mel = random_mel(MEL_PER_CHUNK * 15, seed=4)
+    calls: list[int] = []
+    original_body = streaming._StaticStep._body
+    monkeypatch.setattr(streaming._StaticStep, "_body", lambda self: calls.append(1) or original_body(self))
+    with torch.no_grad():
+        ref, _ = run_from(StreamingEncoder(model, SPEC, path=path), mel, 0)
+        calls.clear()
+        monkeypatch.setattr(streaming, "REBASE_AT", 2 * SPEC.left_context)
+        shifts = spy_rebase(monkeypatch)
+        enc = StreamingEncoder(model, SPEC, path=path)
+        state = enc.new_state()
+        outs, after = [], []
+        for i in range(0, mel.shape[0], MEL_PER_CHUNK):
+            outs.append(enc.step(mel[i : i + MEL_PER_CHUNK], state))
+            after.append(state.frames_seen)
+    assert sum(s > 0 for s in shifts) == 2
+    for before, shift in zip([0, *after[:-1]], shifts, strict=True):
+        assert shift % SPEC.chunk_size == 0
+        if shift:
+            assert before >= streaming.REBASE_AT and before - shift >= SPEC.left_context
+    assert all(f % SPEC.chunk_size == 0 for f in after) and max(after) <= 2 * SPEC.left_context
+    assert float((torch.cat(outs) - ref).abs().max()) <= 1e-4
+    if path == "graph":
+        assert len(calls) == 15 - SPEC.left_context // SPEC.chunk_size
+
+
+# 캐시가 꽉 찬 뒤(9번째 청크) 재기준이 일어나는 시작값으로 eager와 graph를 돌려, 둘이 비트 단위로 같고
+# 0 시작 eager와 tol 안이며 frames_seen이 '전체 프레임 + 좌측 문맥 − 8청크'인지 확인하고, graph의 고정 버퍼
+# stepper를 돌려준다(호출자가 캡처 여부를 본다). CPU 저정밀도 테스트와 CUDA fp16 테스트가 같은 본체를 쓰므로
+# CUDA 테스트의 논리는 CPU에서 먼저 검증된다.
+def steady_state_rebase_check(
+    model: ChunkConformerCTC, mel: torch.Tensor, tol: float
+) -> streaming._StaticStep:
+    start = (1 << 16) - 8 * SPEC.chunk_size
+    ref, s_ref = run_from(StreamingEncoder(model, SPEC), mel, 0)
+    eager, s_eager = run_from(StreamingEncoder(model, SPEC), mel, start)
+    graph, s_graph = run_from(StreamingEncoder(model, SPEC, path="graph"), mel, start)
+    assert torch.equal(eager, graph)
+    expected_frames = s_ref.frames_seen + SPEC.left_context - 8 * SPEC.chunk_size
+    assert s_eager.frames_seen == s_graph.frames_seen == expected_frames
+    assert float((graph - ref).abs().max()) <= tol
+    return streaming._static_stepper(StreamingEncoder(model, SPEC, path="graph"))
+
+
+# 확인: CPU bf16 autocast(가중치 복사본 경로)에서도 정상 상태 재기준이 eager·graph에서 같은 값을 내고
+# 0 시작과 5e-2 안이다(위 메모의 bf16 측정 0.012~0.028). 왜: 아래 CUDA fp16 테스트와 같은 본체를 CPU에서
+# 먼저 돌려 둔다.
+def test_rebase_in_steady_state_under_cpu_bf16_autocast() -> None:
+    model = make_model()
+    mel = random_mel(MEL_PER_CHUNK * 15 + 7, seed=3)
+    with torch.no_grad(), autocast_ctx(torch.bfloat16):
+        stepper = steady_state_rebase_check(model, mel, tol=5e-2)
+    assert stepper.graph is None  # CPU에서는 그래프를 캡처하지 않는다
+
+
+# 확인(GPU 전용, CPU·CI에서는 건너뜀): CUDA fp16에서 그래프가 실제로 캡처·재생되는 정상 상태 step 사이에
+# 재기준이 일어나도(offset 버퍼에 당긴 값이 들어감) graph가 eager와 비트 단위로 같고 0 시작 실행과 5e-2
+# 안이다. 왜: 캡처된 그래프는 offset 버퍼를 읽으므로 버퍼 값만 바뀌면 되는데, 그 사실은 CUDA에서만 확인할 수
+# 있다.
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_rebase_on_the_cuda_graph_path_fp16() -> None:
+    model = make_model().cuda()
+    mel = random_mel(MEL_PER_CHUNK * 15 + 7, seed=3).cuda()
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16):
+        stepper = steady_state_rebase_check(model, mel, tol=5e-2)
+    assert stepper.graph is not None, stepper.graph_failed

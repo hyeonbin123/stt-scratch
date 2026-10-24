@@ -21,7 +21,9 @@ fast·graph는 출력 동일성 관문(docs/experiments.md "7단계 뒤 후속 �
 """
 
 # [상태] 캐시 크기가 좌측 문맥으로 고정되므로 세션이 길어져도 청크당 계산·메모리가 늘지 않는다(10분 드리프트
-# 측정, docs/experiments.md 6단계 결과).
+# 측정, docs/experiments.md 6단계 결과). 위치(frames_seen)는 세션이 길어지면 커지므로 REBASE_AT(2^16프레임,
+# 약 44분)에 이르면 step 앞에서 청크 배수만큼 당긴다(rebase_positions; docs/experiments.md "7단계 뒤 후속 측정
+# 결과" 끝의 2026-10-24 메모). 임계 미만에서는 코드 경로가 그대로라 기록된 측정과 비트 단위로 같다.
 # [정확성] 같은 청크 설정의 오프라인 forward(전체 발화 + 청크 마스크)와 fp32에서 1e-5 안으로 같고(0단계
 # 게이트), 학습된 모델 fp16에서도 실제 스트리밍 CER이 simulated와 0.03포인트 안이었다(H6.1).
 # [왜 빠른 경로인가] 6단계에서 GPU step p90이 63 ms로 목표 50 ms를 넘었고(H6.2 미충족), 진단에서 step
@@ -50,17 +52,59 @@ from stt_scratch.model.mask import ChunkSpec
 
 PATHS = ("eager", "fast", "graph")
 
+# 위치 재기준 임계(인코더 프레임 수). 스트림의 frames_seen이 이 값 이상이면 다음 step 앞에서
+# rebase_positions가 청크 배수만큼 당긴다. 2^16 = 65,536프레임은 25 fps에서 약 43.7분이다. 서버 기본값(끝점 뒤
+# 캐시 유지)에서는 연결(또는 flush) 뒤 frames_seen이 세션 내내 커지는데, RoPE 각도는 fp32로 '위치 × 주파수'를
+# 계산하므로(attention.rope_cos_sin) 위치가 커질수록 반올림 오차가 커지고 2^24프레임(약 7.8일)부터는 이웃
+# 위치가 같은 fp32 값이 된다. 2026-10-24 코드 검토의 사후 확인(최종 모델, CPU fp32, dev_H 앞 8발화를 시작
+# 위치만 바꿔 스트리밍)에서 0 시작 대비 log-prob 최대 절대차가 1 h 0.045, 10 h 0.36, 50 h 2.21, 2^24프레임
+# 22.3이었다. 봉인 test·6단계·후속 측정은 발화마다 새 세션이고 10분 드리프트도 15,000프레임이라 모두 이 임계
+# 미만이다(기록 수치 무관, docs/experiments.md "7단계 뒤 후속 측정 결과" 끝의 2026-10-24 메모). 테스트는 이
+# 전역을 monkeypatch로 바꿔 임계 미만 동일성과 반복 재기준을 확인한다(tests/test_fast_streaming.py).
+REBASE_AT = 1 << 16
+
 
 # 스트림 하나의 상태(발화·세션마다 새로 만든다). frames_seen은 지금까지 처리한 인코더 프레임 수이자 다음 청크
-# 첫 프레임의 절대 번호로, RoPE 위치와 청크 경계 계산에 쓰인다. conv_caches는 Conformer 블록이면 텐서,
+# 첫 프레임의 절대 번호로, RoPE 위치와 청크 경계 계산에 쓰인다. 단, REBASE_AT 이상이 되면 step 앞에서 청크
+# 배수만큼 당겨지므로(rebase_positions) 그 뒤로는 '연결 이후 절대 번호'가 아니라 '재기준된 번호'다. 세션이
+# 이 값을 GreedyState.push의 frame_offset으로 넘겨 GreedyState.frame_of_token에 남기므로, 그 값도 재기준
+# 뒤에는 상대 번호가 된다(지금 이 값을 읽는 코드는 없다). conv_caches는 Conformer 블록이면 텐서,
 # E-Branchformer 블록이면 텐서 두 개짜리 튜플이다.
 @dataclass
 class StreamState:
     spec: ChunkSpec
-    frames_seen: int = 0  # 지금까지 처리한 인코더 프레임(25 fps) 수
+    frames_seen: int = 0  # 지금까지 처리한 인코더 프레임(25 fps) 수(REBASE_AT 이상이면 재기준됨)
     sub_cache: tuple[torch.Tensor, torch.Tensor] | None = None
     attn_caches: list[torch.Tensor] = field(default_factory=list)
     conv_caches: list = field(default_factory=list)  # 블록마다 텐서 하나 또는 텐서 튜플
+
+
+def rebase_positions(state: StreamState, spec: ChunkSpec, threshold: int | None = None) -> int:
+    """frames_seen이 임계(기본 REBASE_AT) 이상이면 청크 배수 B만큼 당기고 B를 돌려준다(아니면 0).
+
+    B = ((frames_seen − left_context) // chunk_size) × chunk_size. 재기준 뒤 frames_seen은 left_context 이상
+    (온전한 청크만 처리했으면 정확히 left_context)이고 frames_seen mod chunk_size는 그대로다. 그래서
+      - 키 위치(frames_seen − 캐시 길이 ~ frames_seen + 청크)가 음수가 되지 않고(캐시 길이 ≤ left_context),
+      - 청크 마스크(위치 // chunk_size 비교)와 BACON 오른쪽 탭의 청크 끝 계산은 모든 위치를 같은 청크 배수만큼
+        옮긴 것이라 변하지 않으며,
+      - graph 경로의 정상 상태 조건(frames_seen % chunk_size == 0)과 offset 버퍼도 그대로다(버퍼 값만
+        작아진다).
+    RoPE는 쿼리·키의 위치 차이에만 의존하고 캐시는 회전 전 입력(LayerNorm 뒤)을 저장하므로 수학적으로 같은
+    계산이다. fp32 반올림 때문에 비트 단위로 같지는 않고, 작은 모델 CPU fp32에서 0 시작과 1e-4 안이다
+    (tests/test_fast_streaming.py). 임계 미만이면 아무것도 하지 않아 기록된 측정 경로와 비트 단위로 같다.
+
+    threshold: None이면 호출 시점의 모듈 전역 REBASE_AT(테스트가 monkeypatch로 바꾼다). B가 0 이하가 되는
+    임계(left_context + chunk_size 미만)에서는 당기지 않는다. StreamingEncoder.step이 세 경로 공통으로 맨
+    앞에서 부르므로 호출자가 따로 부를 필요는 없다. 부작용: state.frames_seen을 제자리에서 바꾼다.
+    """
+    at = REBASE_AT if threshold is None else threshold
+    if state.frames_seen < at:
+        return 0
+    base = ((state.frames_seen - spec.left_context) // spec.chunk_size) * spec.chunk_size
+    if base <= 0:
+        return 0
+    state.frames_seen -= base
+    return base
 
 
 # autocast 가중치 복사본 저장소: 원래 모델 → {dtype: 복사본}. 약한 키라 원래 모델이 사라지면 복사본도
@@ -161,8 +205,11 @@ class StreamingEncoder:
     def step(self, mel: torch.Tensor, state: StreamState) -> torch.Tensor:
         """mel: 청크 하나의 원시 log-mel 프레임 (T_mel, 80), T_mel = 4 * chunk_size.
 
-        새 인코더 프레임의 fp32 log-prob (chunk_size, V)을 돌려주고 state를 제자리에서 갱신한다.
+        새 인코더 프레임의 fp32 log-prob (chunk_size, V)을 돌려주고 state를 제자리에서 갱신한다. 먼저 세 경로
+        공통으로 위치 재기준(rebase_positions)을 거치므로, 긴 세션에서는 state.frames_seen이 연결 이후 절대
+        번호가 아닐 수 있다(REBASE_AT 설명 참고).
         """
+        rebase_positions(state, self.spec)
         if self.path == "eager":
             return self._step_eager(mel, state)
         if self.path == "graph":
@@ -294,7 +341,9 @@ class _StaticStep:
 
     정상 상태 = 좌측 문맥 L프레임 캐시가 모두 찼고(첫 L/청크 개 청크 뒤), mel이 온전한 청크 하나이며,
     처리한 프레임 수가 청크 배수인 step. 그러면 모든 텐서 모양이 매번 같아 그래프 하나로 재생할 수 있다.
-    위치는 offset 텐서(1개 값) + 고정 arange로 만들어 그래프 안에서 계산한다.
+    위치는 offset 텐서(1개 값) + 고정 arange로 만들어 그래프 안에서 계산한다. StreamingEncoder.step의 위치
+    재기준(rebase_positions)은 청크 배수만 당기므로 정상 상태 조건을 깨지 않고, 재생마다 채우는 offset 버퍼
+    값만 작아진다.
 
     상태 묶기(bind): 그래프는 버퍼 주소를 기억하므로 스트림 상태(StreamState)의 캐시 목록이 이 버퍼 자체를
     가리키게 한다. 다른 상태가 오면 먼저 묶였던 상태의 캐시를 복제해 떼어 주고 새 상태를 버퍼로 복사한다.
