@@ -22,6 +22,8 @@
 
 **WebSocket(ZAP이 점검하지 않음, 수동 검토)**: 브라우저는 다른 사이트의 페이지에서도 `ws://127.0.0.1:8765/ws`를 열 수 있다(교차 사이트 WebSocket 하이재킹). 마이크 음성은 그 페이지가 스스로 권한을 받아야 하므로 사용자의 음성이 새지는 않지만, 남의 페이지가 이 서버를 계산 자원으로 쓸 수 있다. Origin 헤더가 있고 서버의 Host와 다르면 연결을 거부(close 1008)하게 했다. Origin을 보내지 않는 스크립트 클라이언트(`scripts/stream_client.py`)는 그대로 쓸 수 있다. 메시지 크기는 uvicorn 기본 상한(16 MiB)을 따른다.
 
+**WebSocket 추가 방어(2026-10-24, 보안 검토 반영)**: 위 Origin 검사는 Origin을 요청 Host와만 비교하므로, 공격자가 자기 도메인의 DNS를 127.0.0.1로 다시 가리키면(DNS 리바인딩) 브라우저가 Host와 Origin에 둘 다 그 도메인을 실어 보내 검사를 통과했다(TestClient로 재현: Host·Origin이 모두 외부 도메인인 연결이 수락되어 flush에 stats를 돌려줬고, Host만 외부인 `GET /info`도 200이었다). 그래서 Host 헤더 허용 목록(Starlette `TrustedHostMiddleware`; 기본 `127.0.0.1`·`localhost`·`[::1]`, `--host` 값, `--allowed-host`로 더한 값)을 두어 목록 밖의 Host로 온 HTTP 요청과 WebSocket 핸드셰이크를 모두 400으로 거부한다(거부 응답에도 보안 헤더가 붙는다). 입력·자원 상한도 더했다. 홀수 바이트 바이너리 프레임(int16 표본으로 나뉘지 않음)은 오류 JSON 한 줄 뒤 close 1007로 끝난다(전에는 처리기 밖으로 나간 예외가 트레이스백을 남기고 1011로 끊었다). 메시지 상한은 1 MiB(16 kHz int16 약 32.8 s)로, uvicorn `ws_max_size`가 전송 계층에서 1009로 닫고 처리기도 같은 상한을 검사한다(uvicorn 기본 16 MiB면 한 프레임에 약 524 s 오디오가 들어와 인코더 계산이 그동안 다른 연결의 자막을 멈춘다). 동시 세션은 8개까지이고(넘으면 오류 JSON 뒤 close 1013), uvicorn `limit_concurrency`는 16이다(넘으면 새 HTTP 요청에 503; WebSocket 업그레이드는 이 값으로 막히지 않아 세션 수는 앱에서 센다). `--host`가 루프백이 아니면 인증 없는 서버를 외부에 연다는 경고를, `--allowed-host '*'`면 Host 검사가 꺼진다는 경고를 시작 로그에 남긴다. 인코더 계산을 별도 스레드로 옮기는 것은 서빙 경로 변경(지연 재측정 필요)이라 하지 않았다. 확인은 `tests/test_service.py`(TestClient)와 실제 uvicorn 서버로 했다.
+
 **bandit**: Medium 1건(B310, `scripts/stream_client.py`가 `--url`에서 만든 주소를 `urlopen`에 넘김)을 http·https 스킴만 허용하도록 고쳤다. 남은 Low 21건은 연구 코드의 `assert`(B101), 데이터 섞기용 `random`(B311, 보안 용도 아님), 고정 인자 목록의 `subprocess`(B404·B603·B607: 학습 하위 프로세스와 `git rev-parse`)라 그대로 둔다.
 
 **pip-audit**: 알려진 취약점 2건, 둘 다 이 프로젝트의 사용 방식에는 해당하지 않는다.
@@ -41,8 +43,10 @@
 
 ## 다시 돌리는 방법
 
+2026-10-24부터 서버에 Host 허용 목록이 있어, Docker 컨테이너의 ZAP이 붙는 이름 `host.docker.internal`을 `--allowed-host`로 더해야 한다(아니면 모든 요청이 400으로 거부된다). ZAP은 HTTP 경로만 보므로 모델 장치는 결과와 무관하고, 점검 중 GPU를 비워 두려면 `--device cpu`로 띄운다.
+
 ```bash
-uv run python -m stt_scratch.service.server     # 다른 셸에서
+uv run python -m stt_scratch.service.server --device cpu --allowed-host host.docker.internal     # 다른 셸에서
 docker run --rm -v "$PWD/work/security/zap:/zap/wrk:rw" zaproxy/zap-stable zap-baseline.py -t http://host.docker.internal:8765/ -J baseline.json -w baseline.md -I
 docker run --rm -v "$PWD/work/security/zap:/zap/wrk:rw" zaproxy/zap-stable zap-api-scan.py -t http://host.docker.internal:8765/openapi.json -f openapi -J api.json -w api.md -I
 uvx bandit -r src scripts
