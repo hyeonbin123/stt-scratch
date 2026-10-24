@@ -11,6 +11,8 @@
 | **Common Voice 22 ko** | HF `fsicoli/common_voice_22_0` (미러, mp3 32 kHz tar + tsv, ko 파일만 190 MB) | CC0 1.0 | 없음 | 크라우드소싱 낭독. validated 1,466발화 2.27 h(154명), 그중 train 519발화 0.91 h / dev 474발화 0.69 h / test 472발화 0.67 h, other(미검증) 3,813발화 5.36 h, invalidated 399발화. **이것을 쓴다** |
 | Common Voice 17 ko | HF `fsicoli/common_voice_17_0` | CC0 1.0 | 없음 | 22가 못 쓰이게 될 때의 폴백. validated 1,046발화 1.63 h(90명), train 376 / dev 330 / test 339, other 2,057발화 3.39 h |
 
+2026-10-24 정정: 위 표 Common Voice 두 행의 괄호 속 화자 수(22의 154명, 17의 90명)는 validated가 아니라 받은 ko 배포본 전체(validated·other·invalidated)의 `client_id` 수다. validated만 세면 22는 84명(train 3명·dev 7명·test 74명, 세 분할에 겹치는 화자 없음), 17은 52명이다(`reports/data/inventory-2026-10-11.json`의 `n_speakers`). 발화 수·시간은 그대로다.
+
 받는 법: `uv run python scripts/download_data.py` (약 5.5 GB; `--only` 로 일부만). 스크립트가 게이트 여부를 먼저 확인하고 게이트가 있으면 멈춘다.
 
 쓰지 않는 것: KsponSpeech(AI Hub 승인·내국인 전용), ClovaCall(학술 신청), OpenSLR 58/97/113·KSS(NC 또는 ND 라이선스), Common Voice 공식 저장소(2025-10부터 Mozilla Data Collective 계정 필요).
