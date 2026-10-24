@@ -52,7 +52,7 @@ uv run pytest -q
 uv run ruff format src scripts tests && uv run ruff check src scripts tests
 ```
 
-테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금), 후속 옵션(빠른 step 경로가 eager와 비트 단위로 같음, 2차 패스 = 세그먼트의 전체 문맥 디코딩), 봉인 test 사후 분석(군집이 발화이면 군집 부트스트랩이 등록 부트스트랩과 비트 단위로 같음, 저장된 보고서 재현, whisper 앵커와 짝지을 때 결합이 일대일이고 정답이 같아야 함; 실데이터가 필요한 재현 확인은 `data/raw`와 whisper-ko-ft 체크아웃이 없으면 건너뜀)을 확인한다. CUDA가 없으면 fp16·CUDA Graph 테스트는 건너뛴다. GitHub Actions(`.github/workflows/ci.yml`)가 push마다 CPU에서 ruff와 pytest를 돈다.
+테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금), 후속 옵션(빠른 step 경로가 eager와 비트 단위로 같음, 2차 패스 = 세그먼트의 전체 문맥 디코딩), 봉인 test 사후 분석(군집이 발화이면 군집 부트스트랩이 등록 부트스트랩과 비트 단위로 같음, 저장된 보고서 재현, whisper 앵커와 짝지을 때 결합이 일대일이고 정답이 같아야 함; 실데이터가 필요한 재현 확인은 `data/raw`와 whisper-ko-ft 체크아웃이 없으면 건너뜀), 브라우저 자막 페이지 스크립트의 연결·오디오 수명 관리(`tests/web_page_harness.js`가 Node.js vm의 가짜 DOM·WebSocket·Web Audio·가상 타이머로 `web/index.html`의 스크립트를 돌림: 멈춤 직후 재시작, 시작 실패, 마이크 트랙 정지, 16 kHz가 아닐 때 전송 안 함, endpoint 처리; `node`가 없으면 건너뜀)를 확인한다. CUDA가 없으면 fp16·CUDA Graph 테스트는 건너뛴다. GitHub Actions(`.github/workflows/ci.yml`)가 push마다 CPU에서 ruff와 pytest를 돈다.
 
 ## 학습·평가
 
@@ -85,6 +85,8 @@ uv run python -m stt_scratch.service.server
 
 기본값은 6단계에서 정한 구성에 7단계 뒤 후속 측정(`docs/experiments.md` "7단계 뒤 후속 측정", 규칙 변경 26)의 판정을 더한 것이다: 최종 모델 `outputs/stage4/trimtail/avg10.pt`(12층), 320 ms 청크, 좌측 문맥 128프레임(5.12 s), GPU fp16 autocast, 토큰 뒤 묵음 0.8 s 끝점, 끝점 뒤 인코더 캐시 유지, 끝점에서 세그먼트를 같은 모델의 전체 문맥으로 다시 디코딩한 확정 자막(`--final-pass full`; `none`이면 6단계까지의 1-pass), 인코더 step 경로 `--step-path auto`(GPU는 정상 상태 step을 CUDA Graph로 재생하는 graph, CPU는 연산 수를 줄인 fast; 둘 다 6·7단계에 쓴 eager 경로와 출력이 비트 단위로 같음을 dev_H 전수로 확인). 시작할 때 부분 청크 길이·2차 패스 길이 묶음마다 한 번씩 예열하고 CUDA Graph를 캡처한다. 보안 점검(OWASP ZAP·bandit·pip-audit·gitleaks, 결과와 고친 것)은 `docs/security.md`. 브라우저에서 `http://127.0.0.1:8765/`를 열면 마이크 입력을 320 ms마다 보내고 부분 자막(320 ms 스트리밍, 덧붙기만 함)과 끝점으로 확정된 세그먼트(2차 패스 결과가 부분 자막을 대체)를 보여 준다. 프로토콜은 `src/stt_scratch/service/server.py` 머리말에 있다. 인증이 없으므로 로컬 데모용이다.
 
+페이지는 잠정 자막(기울임)과 확정 자막을 구분하고 설정 줄에 2차 패스·step 경로를 보인다. 멈춤을 누르면 남은 음성을 보내고 `flush` 응답(마지막 확정 자막·통계)을 받은 뒤 연결을 닫으며, 멈춤 직후 다시 시작해도 새 연결은 이전 연결과 독립이다(이전 연결의 확정 자막은 그대로 붙는다). 시작 실패(마이크 권한 거부, 비보안 출처, 16 kHz가 아닌 AudioContext)와 연결 실패·끊김(서버의 오류 줄·종료 코드)은 상태 줄에 사유를 보이고 시작 버튼을 되살린다. 페이지 스크립트는 `tests/test_web_page.py`가 Node.js의 가짜 브라우저 환경에서 확인하지만 실제 브라우저와 다를 수 있으므로, 페이지를 고치면 브라우저에서 직접 본다: 멈춤 직후 다시 시작해도 '듣는 중'이 유지되고 이전 세그먼트의 확정 자막이 들어오는지, 마이크 권한을 거부하면 상태 줄에 사유가 뜨고 시작 버튼이 돌아오는지, 멈춘 뒤 브라우저 탭의 마이크 사용 표시가 꺼지는지. 다른 PC에서 접속하게 하려면 `--host <IP>`로 열고(인증이 없어 시작 경고가 남는다) 클라이언트가 주소창에 쓰는 이름·IP를 `--allowed-host`로 Host 허용 목록에 더한다(기본 목록은 `127.0.0.1`·`localhost`·`[::1]`과 `--host` 값이고, 목록 밖의 Host로 온 요청은 400). 다만 브라우저는 마이크 API를 보안 출처(https 또는 localhost)에서만 열어 주므로 http로 접속한 다른 PC에서는 페이지가 '이 출처에서는 마이크를 쓸 수 없습니다'를 보인다.
+
 6단계 측정(dev, `docs/experiments.md` "6단계 결과"): 실제 캐시 스트리밍 CER은 simulated와 0.03포인트 안, 청크당 계산 p50 약 62 ms(GPU) / 44 ms(CPU 1스레드), 패킷 송신 → 부분 자막 p50 62 ms(로컬, 청크를 모으는 시간 제외), 끝점 확정 EP50 1.3 s, 10분 길이 오디오를 한 세션으로 처리했을 때(실시간이 아니라 약 2분에 처리) 청크 계산 시간·메모리 증가 없음.
 
 후속 측정(dev, 2026-10-18, 다른 프로그램이 GPU 3D 엔진을 약 40~49 % 쓰던 부하 조건; `reports/followup/summary.md`): 세션(발화 뒤 잡음 3 s, 캐시 유지, rule2 0.8 s)의 확정 자막 CER_ns는 1-pass 대비 dev_mix 26.86 → 22.85 %(−4.02, 95 % −4.55 ~ −3.50), dev_H 18.75 → 16.01 %, 2차 패스 계산 GPU p50/p90 50 / 55 ms·CPU 1스레드 123 / 195 ms, EP50/EP90 905 / 1,065 ms(1.2 s일 때 1,295 / 1,465 ms). 확정 자막은 텍스트가 있는 세그먼트의 약 96 %에서 부분 자막과 다르다(부분 자막을 고쳐 씀). 청크당 계산 p50/p90은 GPU eager 64.7 / 72.5 ms → graph 38.1 / 43.0 ms(정상 상태 7.9 / 8.5 ms), CPU 1스레드 eager 46.8 / 51.3 → fast 40.3 / 44.4 ms. 6층 조기 종료는 보고만 했다(dev_mix 차이 없음, dev_H 14.5 % vs 18.8 %; 서비스는 봉인 test로 잰 12층 그대로).
@@ -108,7 +110,8 @@ scripts/           데이터 내려받기·재고·준비, mel 통계, 벤치, �
 tests/             게이트 테스트(test_model), 전처리(test_prepare_data), 서비스(test_service),
                    4단계 지연 도우미(test_latency), 봉인 test 보호 장치(test_stage7_guards),
                    빠른 step 경로·조기 종료(test_fast_streaming), 끝점 뒤 2차 패스(test_final_pass),
-                   사후 분석(test_sealed_breakdown, test_cluster_bootstrap)
+                   사후 분석(test_sealed_breakdown, test_cluster_bootstrap),
+                   브라우저 페이지 스크립트(test_web_page + Node.js 하네스 web_page_harness.js)
 docs/              survey/(조사·결정), experiments.md(규칙·결과), plan.md, data.md, ai-verification.md, security.md
 manifests/         분할 매니페스트, 어휘, mel 통계 (커밋)
 reports/           단계별 측정 결과 (커밋)
