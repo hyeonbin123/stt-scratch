@@ -4,7 +4,8 @@
 디코딩해 확정 자막으로 쓴다. 확인하는 것: (1) 확정 텍스트 = 그 세그먼트 mel을 오프라인 전체 문맥으로 디코딩한
 결과, (2) 세그먼트들의 mel을 이으면 음성 전체가 빠짐없이 들어 있음, (3) 2차 패스를 켜도 스트리밍 쪽(부분 자막,
 끝점, stream_text)은 끈 세션과 같음, (4) 길이 묶음용 0 덧붙이기가 결과를 바꾸지 않음, (5) 예열 뒤 세션이 새
-세션과 같음, (6) 서버 옵션과 /info.
+세션과 같음, (6) 서버가 --step-path·--final-pass를 세션에 실제로 넘기고(/info 표시, 2차 패스 시간 > 0, 끝점을
+끈 서버의 확정 자막 = 같은 PCM의 오프라인 전체 문맥 디코딩, 세션 생성 인자 기록).
 """
 
 # [방식] test_service.py와 같은 작은 무작위 모델(d=32, 2층)과 8토큰 어휘로 CPU에서 돈다. 학습된 가중치 없이
@@ -14,6 +15,8 @@ from __future__ import annotations
 
 import json
 
+# numpy: 서버가 받는 int16 PCM 바이트를 서버와 같은 식(np.frombuffer ÷ 32768)으로 되돌려 기준 디코딩에 쓴다.
+import numpy as np
 import torch
 from fastapi.testclient import TestClient
 
@@ -168,11 +171,38 @@ def test_warm_up_with_final_pass_and_graph_leaves_a_fresh_session() -> None:
     assert summary(run(session, wav)) == summary(run(fresh, wav))
 
 
-# 확인: 서버가 --step-path·--final-pass 설정을 세션에 넘기고 /info에 보이며, 확정 자막 메시지에 2차 패스
-# 시간이 들어간다. 기본값은 eager·none(판정 전)이다.
-def test_server_passes_the_followup_options(tmp_path) -> None:
+# 도우미: PCM 바이트 하나를 보내고 flush한 뒤 서버 메시지를 stats가 올 때까지(최대 200개) 읽어 돌려준다.
+def stream_pcm(client: TestClient, pcm: bytes) -> list[dict]:
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(pcm)
+        ws.send_text("flush")
+        got: list[dict] = []
+        for _ in range(200):
+            got.append(json.loads(ws.receive_text()))
+            if got[-1]["type"] == "stats":
+                break
+    return got
+
+
+# 확인: 서버가 --step-path·--final-pass 설정을 세션에 실제로 넘긴다. /info 표시(기본값은 eager·none, 판정 전
+# 동작)에 더해 (1) 2차 패스를 켠 서버의 확정 자막은 2차 패스 시간이 0보다 크고 끈 서버는 모두 0, (2) 끝점을 끈
+# 서버의 확정 자막은 같은 int16 PCM(÷32768)을 오프라인 전체 문맥으로 디코딩한 것과 같고, (3)
+# server.StreamSession을 기록용 하위 클래스로 바꿔 연결마다 받은 step_path·final_pass가 설정과 같다. 왜:
+# 전에는 /info 값과 'final 이벤트에 final_pass_ms 키가 있음'만 보았는데, 서버는 설정과 무관하게 그 키를
+# 늘 넣으므로 ws 처리기가 옵션을 넘기지 않는 회귀(2차 패스가 조용히 꺼지고 /info만 full)를 잡지 못했다.
+def test_server_passes_the_followup_options(tmp_path, monkeypatch) -> None:
     from stt_scratch.service import server
 
+    seen: list[tuple] = []
+
+    class Recording(server.StreamSession):
+        """서버가 세션에 넘긴 step_path·final_pass를 기록한다(/info 값과 별개로 전달 자체를 본다)."""
+
+        def __init__(self, *args, **kwargs) -> None:
+            seen.append((kwargs.get("step_path"), kwargs.get("final_pass")))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(server, "StreamSession", Recording)
     model = tiny_model()
     ckpt = tmp_path / "m.pt"
     torch.save({"model": model.state_dict(), "config": model.cfg.__dict__}, ckpt)
@@ -182,40 +212,39 @@ def test_server_passes_the_followup_options(tmp_path) -> None:
     server.ROOT = tmp_path
     # TestClient의 Host(testserver)를 허용 목록에 넣는다(기본 목록은 루프백 이름만, tests/test_service.py).
     hosts = ["testserver"]
+    followup = {"warm": False, "step_path": "fast", "final_pass": "full", "allowed_hosts": hosts}
     try:
         default = server.build_app(
             ckpt, 8, 64, "cpu", EndpointConfig(), False, warm=False, allowed_hosts=hosts
         )
-        app = server.build_app(
-            ckpt,
-            8,
-            64,
-            "cpu",
-            EndpointConfig(),
-            False,
-            warm=False,
-            step_path="fast",
-            final_pass="full",
-            allowed_hosts=hosts,
-        )
+        app = server.build_app(ckpt, 8, 64, "cpu", EndpointConfig(), False, **followup)
+        no_endpoint = server.build_app(ckpt, 8, 64, "cpu", NO_ENDPOINT, False, **followup)
     finally:
         server.ROOT = original
-    info = TestClient(default).get("/info").json()
-    assert (info["step_path"], info["final_pass"]) == ("eager", "none")
+    pcm = (noise_wav(1.0, seed=9) * 40000).to(torch.int16).numpy().tobytes()
+    client = TestClient(default)
+    assert (client.get("/info").json()["step_path"], client.get("/info").json()["final_pass"]) == (
+        "eager",
+        "none",
+    )
+    finals = [m for m in stream_pcm(client, pcm) if m["type"] == "final"]
+    assert finals and all(m["final_pass_ms"] == 0 for m in finals) and seen[-1] == ("eager", "none")
     client = TestClient(app)
     info = client.get("/info").json()
     assert (info["step_path"], info["final_pass"]) == ("fast", "full")
-    pcm = (noise_wav(1.0, seed=9) * 40000).to(torch.int16).numpy().tobytes()
-    with client.websocket_connect("/ws") as ws:
-        ws.send_bytes(pcm)
-        ws.send_text("flush")
-        got = []
-        for _ in range(200):
-            got.append(json.loads(ws.receive_text()))
-            if got[-1]["type"] == "stats":
-                break
-    finals = [m for m in got if m["type"] == "final"]
+    finals = [m for m in stream_pcm(client, pcm) if m["type"] == "final"]
     assert finals and all("final_pass_ms" in m for m in finals)
+    # 2차 패스가 실제로 돌았다: 계산 시간이 0보다 크다(옵션을 버리는 세션이면 0.0으로 남는다).
+    assert any(m["final_pass_ms"] > 0 for m in finals) and seen[-1] == ("fast", "full")
+    # 끝점을 끄면 세그먼트가 하나라 확정 자막 = 서버가 받은 PCM 전체의 오프라인 전체 문맥 디코딩
+    # (2차 패스 정의).
+    wav = torch.from_numpy(np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0)
+    with torch.no_grad():
+        mel, _ = LogMel()(wav[None], torch.tensor([wav.numel()]))
+    expected = offline_full(model, mel[0])
+    finals = [m for m in stream_pcm(TestClient(no_endpoint), pcm) if m["type"] == "final"]
+    assert expected.strip() and [m["text"] for m in finals] == [expected]
+    assert seen[-1] == ("fast", "full")
 
 
 # 확인: 명령행 서버의 기본값이 후속 측정 판정의 구성이다(step 경로 auto → GPU graph·CPU fast, 2차 패스 full,

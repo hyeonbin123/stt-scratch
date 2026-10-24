@@ -50,6 +50,7 @@ from stt_scratch.data import PcmStore, read_manifest
 from stt_scratch.evaluate import (
     autocast,
     batch_features,
+    check_vocab,
     decode_streaming,
     duration_batches,
     load_model,
@@ -896,6 +897,7 @@ def main(argv: list[str] | None = None) -> None:
         return
     model, _ = load_model(ROOT / args.checkpoint, device)
     vocab = Vocab.load(ROOT / "manifests" / "vocab.json")
+    check_vocab(model, vocab)  # 어휘 토큰 수 ≠ 체크포인트 출력 크기면 측정 전에 멈춘다(잘못된 수치 기록 방지)
     commands = {
         "gate": cmd_gate,
         "timing": cmd_timing,

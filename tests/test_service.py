@@ -3,7 +3,9 @@
 스트리밍 서비스(service/endpoint, session, server)의 동작을 확인한다: 끝점 규칙 시점, 끝점을 끈 세션 결과 ==
 배치 청크 마스크 greedy, 끝점이 버퍼 음성을 잃지 않는지, fp16 정밀도, WebSocket 왕복과 보안 헤더·Origin
 검사, Host 허용 목록(DNS 리바인딩 방어), WebSocket 입력·자원 상한(홀수 바이트 프레임, 큰 프레임, 동시 세션
-수), 명령행 실행이 uvicorn에 넘기는 전송 상한과 경고, CSP 해시, 서버 예열.
+수), 명령행 실행이 uvicorn에 넘기는 전송 상한과 경고, CSP 해시, 서버 예열, 서버 상태 보고(/info의 어휘
+SHA-256·torch 스레드 수·CUDA Graph 캡처 상태, 캡처 실패 시 fast 폴백), 어휘 크기 검사, CPU 장치의 기본
+1스레드.
 """
 
 # [방식] 작은 모델(d=32, 2층)과 8토큰 어휘로 CPU에서 돌린다. 서버는 실제 포트에 띄우지 않고 FastAPI
@@ -14,6 +16,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 
@@ -259,24 +262,43 @@ def test_page_csp_hashes_match_the_inline_blocks() -> None:
     assert not server.same_origin("http://evil.example", "127.0.0.1:8765")
 
 
-# 도우미: 시험용 작은 모델 체크포인트와 어휘를 tmp_path에 만들고 server.build_app으로 앱을 만든다(CPU, 청크 8,
-# 좌측 64, 끝점 기본값, 끝점에서 캐시 초기화). build_app이 server.ROOT 아래 manifests/vocab.json을 읽으므로
-# ROOT를 잠시 tmp_path로 바꾸고 finally로 되돌린다. kwargs(allowed_hosts·max_frame_bytes·max_sessions·warm
-# 등)는 그대로 넘긴다. 같은 tmp_path로 여러 번 불러도 된다(파일을 덮어쓴다).
-def make_app(tmp_path, **kwargs):
+# 도우미: 시험용 작은 모델 체크포인트와 어휘를 tmp_path에 만들고 server.build_app으로 앱을 만든다(기본 CPU,
+# 청크 8, 좌측 64, 끝점 기본값, 끝점에서 캐시 초기화). build_app이 server.ROOT 아래 manifests/vocab.json을
+# 읽으므로 ROOT를 잠시 tmp_path로 바꾸고 finally로 되돌린다. device는 build_app에 넘기는 장치 문자열(CUDA 전용
+# 테스트가 "cuda"를 준다), vocab은 저장할 어휘(어휘 크기 검사 테스트가 모델과 다른 크기를 준다).
+# kwargs(allowed_hosts·max_frame_bytes·max_sessions·warm·step_path 등)는 그대로 넘긴다. 같은 tmp_path로
+# 여러 번 불러도 된다(파일을 덮어쓴다).
+def make_app(tmp_path, device: str = "cpu", vocab: Vocab = VOCAB, **kwargs):
     from stt_scratch.service import server
 
     model = tiny_model()
     ckpt = tmp_path / "m.pt"
     torch.save({"model": model.state_dict(), "config": model.cfg.__dict__}, ckpt)
     (tmp_path / "manifests").mkdir(exist_ok=True)
-    VOCAB.save(tmp_path / "manifests" / "vocab.json")
+    vocab.save(tmp_path / "manifests" / "vocab.json")
     original = server.ROOT
     server.ROOT = tmp_path
     try:
-        return server.build_app(ckpt, 8, 64, "cpu", EndpointConfig(), True, **kwargs)
+        return server.build_app(ckpt, 8, 64, device, EndpointConfig(), True, **kwargs)
     finally:
         server.ROOT = original
+
+
+# 도우미: server.StreamSession을 생성 인자(step_path·final_pass)를 기록하는 하위 클래스로 바꿔 끼운다. 서버가
+# 세션에 실제로 넘기는 옵션을 /info 값과 별개로 확인할 때 쓴다(예열 세션과 연결마다의 세션이 모두 순서대로
+# 기록된다). monkeypatch가 테스트 끝에 원래 클래스로 되돌린다.
+def record_sessions(monkeypatch) -> list[tuple]:
+    from stt_scratch.service import server
+
+    seen: list[tuple] = []
+
+    class Recording(server.StreamSession):
+        def __init__(self, *args, **kwargs) -> None:
+            seen.append((kwargs.get("step_path"), kwargs.get("final_pass")))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(server, "StreamSession", Recording)
+    return seen
 
 
 # 도우미: flush를 보낸 뒤 서버 메시지를 stats가 올 때까지(최대 200개) 읽어 돌려준다. 서버는 flush에 항상
@@ -353,6 +375,9 @@ def test_main_passes_the_allow_list_and_transport_limits(monkeypatch, caplog) ->
     seen: dict = {}
     monkeypatch.setattr(server, "build_app", lambda *a, **k: seen.update(build=k) or "app")
     monkeypatch.setattr(server.uvicorn, "run", lambda app, **k: seen.update(app=app, run=k))
+    # main은 CPU 장치에서 torch 스레드 수를 1로 두므로(아래 스레드 테스트), 이 테스트 프로세스의 스레드 수가
+    # 바뀌지 않게 가짜로 바꾼다.
+    monkeypatch.setattr(server.torch, "set_num_threads", lambda n: None)
     caplog.set_level(logging.WARNING, logger="stt_scratch.service.server")
 
     def warnings() -> list[str]:
@@ -371,6 +396,144 @@ def test_main_passes_the_allow_list_and_transport_limits(monkeypatch, caplog) ->
     server.main(["--allowed-host", "*"])
     assert seen["build"]["allowed_hosts"][-1] == "*"
     assert len(warnings()) == 1 and "disables the Host check" in warnings()[0]
+
+
+# 확인: 명령행 실행(main)이 torch 연산 스레드 수를 정한다. 기본값은 장치가 cpu면 1(6단계·후속 측정의 CPU
+# 1스레드 조건과 같게), cuda면 바꾸지 않음. --threads를 주면 장치와 무관하게 그 값이고, 1보다 작으면 모델을
+# 올리기 전에 거부한다. 왜: 서버는 스레드 수를 정하지 않아 CPU 장치에서 기본 스레드 수(이 PC 6코어)로 돌았고,
+# 그러면 README·docs의 'CPU 1스레드' 수치가 서버가 실제로 도는 조건의 값이 아니었다. 테스트 프로세스의 스레드
+# 수가 바뀌지 않게 torch.set_num_threads를 기록용 가짜로 바꾼다.
+def test_main_sets_the_cpu_thread_count(monkeypatch) -> None:
+    from stt_scratch.service import server
+
+    seen: dict = {}
+    threads: list[int] = []
+    monkeypatch.setattr(server, "build_app", lambda *a, **k: seen.update(build=k) or "app")
+    monkeypatch.setattr(server.uvicorn, "run", lambda app, **k: seen.update(app=app, run=k))
+    monkeypatch.setattr(server.torch, "set_num_threads", threads.append)
+    server.main(["--device", "cpu"])
+    assert threads == [1]  # CPU 장치 기본값: 측정 조건과 같은 1스레드
+    server.main(["--device", "cuda"])
+    assert threads == [1]  # CUDA 장치 기본값: 바꾸지 않는다
+    server.main(["--device", "cuda", "--threads", "2"])
+    server.main(["--device", "cpu", "--threads", "4"])
+    assert threads == [1, 2, 4]
+    with pytest.raises(SystemExit):
+        server.main(["--device", "cpu", "--threads", "0"])
+    assert threads == [1, 2, 4] and seen["app"] == "app"
+
+
+# 확인: /info가 어휘 파일의 SHA-256(vocab_sha256)과 지금 프로세스의 torch 연산 스레드 수(cpu_threads),
+# 프레임·세션 상한(max_frame_bytes·max_sessions)을 보이고, CUDA Graph 상태 두 필드(graph_captured·
+# graph_failed)는 step 경로가 graph가 아니거나 예열하지 않았으면 null, CPU의 graph 경로는 고정 버퍼
+# 코드만 돌고 그래프를 캡처하지 않으므로 예열 뒤 captured false·실패 없음이다. 왜: 측정 도구
+# (scripts/stream_client.py)가 /info를 결과 파일의 출처로 남기므로, 어떤 어휘·스레드 수·step
+# 경로·상한으로 돌았는지 거기서 드러나야 한다.
+def test_info_reports_vocab_hash_threads_and_graph_status(tmp_path) -> None:
+    from stt_scratch.model import streaming
+    from stt_scratch.service import server
+
+    info = TestClient(make_app(tmp_path, warm=False, allowed_hosts=["testserver"])).get("/info").json()
+    vocab_bytes = (tmp_path / "manifests" / "vocab.json").read_bytes()
+    assert info["vocab_sha256"] == hashlib.sha256(vocab_bytes).hexdigest() and info["vocab"] == len(VOCAB)
+    assert info["cpu_threads"] == torch.get_num_threads() and info["cpu_threads"] >= 1
+    assert (info["max_frame_bytes"], info["max_sessions"]) == (server.MAX_FRAME_BYTES, server.MAX_SESSIONS)
+    assert (info["step_path"], info["graph_captured"], info["graph_failed"]) == ("eager", None, None)
+    graph = make_app(tmp_path, warm=True, step_path="graph", allowed_hosts=["testserver"])
+    info = TestClient(graph).get("/info").json()
+    assert (info["step_path"], info["graph_captured"], info["graph_failed"]) == ("graph", False, None)
+    # 상태 도우미 자체: 아직 step이 없으면 captured false·실패 없음, CPU에서 정상 상태 step을 돌린 뒤에도
+    # 그래프는 없고, 실패 사유가 남은 stepper는 그대로 보고하며, 다른 청크 설정의 상태와 섞이지 않는다.
+    model = tiny_model()
+    spec = ChunkSpec(8, 64)
+    assert streaming.graph_status(model, spec) == {"captured": False, "failed": None}
+    enc = streaming.StreamingEncoder(model, spec, path="graph")
+    state = enc.new_state()
+    mel = torch.randn(32 * 10, 80, generator=torch.Generator().manual_seed(3))
+    with torch.no_grad():
+        for i in range(0, mel.shape[0], 32):
+            enc.step(mel[i : i + 32], state)
+    assert streaming.graph_status(model, spec) == {"captured": False, "failed": None}
+    streaming._static_stepper(enc).graph_failed = "simulated"
+    assert streaming.graph_status(model, spec) == {"captured": False, "failed": "simulated"}
+    assert streaming.graph_status(model, ChunkSpec(4, 32)) == {"captured": False, "failed": None}
+
+
+# 확인: 어휘 파일의 토큰 수가 체크포인트의 출력 크기(ModelConfig.vocab_size)와 다르면 evaluate.check_vocab과
+# 서버 앱 만들기가 두 값을 적은 SystemExit로 멈춘다(어휘가 크든 작든). 같으면 그대로 지나간다. 왜: 전에는
+# 검사가 없어서 어휘가 모델 출력보다 작으면 디코딩 중 IndexError로 연결이 끊기고, 크기가 같고 순서만 다르면
+# 조용히 다른 글자를 냈다(순서 차이는 크기 검사로 잡을 수 없으므로 /info의 vocab_sha256으로 출처를 남긴다).
+def test_vocab_size_mismatch_refuses_to_start(tmp_path) -> None:
+    from stt_scratch import evaluate
+
+    model = tiny_model()
+    evaluate.check_vocab(model, VOCAB)  # 8 == 8
+    bigger = Vocab((*VOCAB.tokens, "바"))
+    with pytest.raises(SystemExit) as exc:
+        evaluate.check_vocab(model, bigger)
+    assert "9" in str(exc.value) and "8" in str(exc.value)
+    with pytest.raises(SystemExit) as exc:
+        make_app(tmp_path, vocab=bigger, warm=False, allowed_hosts=["testserver"])
+    assert "9" in str(exc.value) and "8" in str(exc.value)
+    with pytest.raises(SystemExit) as exc:
+        make_app(tmp_path, vocab=Vocab(VOCAB.tokens[:7]), warm=False, allowed_hosts=["testserver"])
+    assert "7" in str(exc.value) and "8" in str(exc.value)
+
+
+# 확인: 예열 뒤 CUDA Graph 캡처가 실패한 상태(streaming.graph_status를 실패로 바꿔 흉내)면 서버가 경고를
+# 남기고 step 경로를 fast로 바꿔 /info에 step_path fast·graph_captured false·graph_failed(사유 앞 200자)를
+# 적으며, 이후 연결의 세션이 실제로 fast로 만들어진다(예열 세션은 graph). 왜: 전에는 캡처 실패가 사유만 남기고
+# 조용히 고정 버퍼 코드로 폴백해 /info와 측정 결과 파일이 여전히 graph라고 적었다. fast와 graph는 출력
+# 동일성 관문에서 같은 출력이 확인된 경로라 바꿔도 자막은 같다. 실제 CUDA 캡처 실패 경로는 아래 CUDA 전용
+# 테스트가 본다.
+def test_graph_capture_failure_falls_back_to_fast(tmp_path, monkeypatch, caplog) -> None:
+    from stt_scratch.model import streaming
+
+    reason = "simulated capture failure: " + "x" * 300
+    monkeypatch.setattr(streaming, "graph_status", lambda *a, **k: {"captured": False, "failed": reason})
+    seen = record_sessions(monkeypatch)
+    caplog.set_level(logging.WARNING, logger="stt_scratch.service.server")
+    app = make_app(tmp_path, warm=True, step_path="graph", allowed_hosts=["testserver"])
+    assert seen == [("graph", "none")]  # 예열 세션은 graph 경로로 돌았다
+    warnings = [r.getMessage() for r in caplog.records if r.name == "stt_scratch.service.server"]
+    assert len(warnings) == 1 and "fast" in warnings[0] and reason[:200] in warnings[0]
+    client = TestClient(app)
+    info = client.get("/info").json()
+    assert (info["step_path"], info["graph_captured"]) == ("fast", False)
+    assert info["graph_failed"] == reason[:200] and len(info["graph_failed"]) == 200
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text("flush")
+        assert read_until_stats(ws)[-1]["type"] == "stats"
+    assert seen[-1] == ("fast", "none")  # 이후 연결은 fast로 돈다
+
+
+# 확인(GPU 전용, CPU·CI에서는 건너뜀): CUDA에서 graph 경로로 예열한 서버는 /info에 graph_captured true를 적고,
+# 캡처 중 torch.cuda.graph가 RuntimeError를 내면(캡처를 지원하지 않는 연산·메모리 부족 등을 흉내) 같은 서버가
+# step_path fast·graph_captured false·graph_failed(사유)를 적으며 그 뒤 연결도 정상으로 동작한다. 왜: 위 CPU
+# 테스트는 상태 도우미를 바꿔 흉내만 내므로, 실제 캡처 실패가 _StaticStep에 남는 경로를 GPU에서 한 번 본다.
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_cuda_graph_capture_status_and_failure_report(tmp_path, monkeypatch) -> None:
+    app = make_app(tmp_path, device="cuda", step_path="graph", allowed_hosts=["testserver"])
+    info = TestClient(app).get("/info").json()
+    assert (info["step_path"], info["graph_captured"], info["graph_failed"]) == ("graph", True, None)
+    assert info["precision"] == "fp16-autocast"
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated capture failure")
+
+    monkeypatch.setattr(torch.cuda, "graph", boom)
+    app = make_app(tmp_path, device="cuda", step_path="graph", allowed_hosts=["testserver"])
+    client = TestClient(app)
+    info = client.get("/info").json()
+    assert (info["step_path"], info["graph_captured"]) == ("fast", False)
+    assert "simulated capture failure" in info["graph_failed"]
+    g = torch.Generator().manual_seed(1)
+    pcm = (torch.randn(16000, generator=g) * 2000).to(torch.int16).numpy().tobytes()
+    with client.websocket_connect("/ws") as ws:
+        for i in range(0, len(pcm), 10240):
+            ws.send_bytes(pcm[i : i + 10240])
+        ws.send_text("flush")
+        assert read_until_stats(ws)[-1]["chunks"] == n_mel_frames(16000) // 32
 
 
 # 확인: push_pcm16은 홀수 바이트(int16 표본 경계가 깨진 입력)를 원인이 드러나는 ValueError로 거부하고, 빈

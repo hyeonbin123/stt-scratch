@@ -272,6 +272,23 @@ def _static_stepper(enc: StreamingEncoder) -> _StaticStep:
     return per_model[key]
 
 
+# 서버(service.server.build_app)와 측정 도구가 그래프 캡처 상태를 읽는 공개 도우미. _StaticStep은 캡처가
+# 실패하면 사유만 graph_failed에 남기고 그 뒤 모든 step을 그래프 없는 고정 버퍼 코드로 돌리므로(아래
+# _StaticStep.step의 use_graph), 밖에서 이 상태를 읽지 않으면 '캡처 실패 = 조용히 fast 수준으로 느려짐'이
+# 드러나지 않는다. 입력: 세션이 쓰는 원래 모델 객체(가중치 복사본이 아님), 청크 설정, 블록 수(None이면 전체 =
+# exit_layer 없음). 출력: {"captured": 그래프가 있음, "failed": 캡처 실패 사유 또는 None}. 같은 모델·설정의
+# stepper가 아직 없으면(정상 상태 step이 한 번도 없었거나 graph 경로를 쓰지 않음) captured False·failed None.
+# 주의: stepper는 _static_stepper가 만들 때까지 없으므로, 서버는 예열(warm_up: 캐시가 꽉 차는 청크 수 + 2개)
+# 뒤에 읽는다. CPU에서는 그래프를 캡처하지 않으므로 늘 captured False·failed None이다.
+def graph_status(model: ChunkConformerCTC, spec: ChunkSpec, n_blocks: int | None = None) -> dict:
+    """모델·청크 설정(·블록 수)의 정상 상태 stepper가 CUDA Graph를 캡처했는지와 실패 사유를 돌려준다."""
+    key = (spec.chunk_size, spec.left_context, len(model.blocks) if n_blocks is None else n_blocks)
+    stepper = _STEPPERS.get(model, {}).get(key)
+    if stepper is None:
+        return {"captured": False, "failed": None}
+    return {"captured": stepper.graph is not None, "failed": stepper.graph_failed}
+
+
 class _StaticStep:
     """캐시가 꽉 찬 정상 상태 step을 고정 버퍼 위에서 돌린다(CUDA에서는 CUDA Graph로 캡처해 재생).
 

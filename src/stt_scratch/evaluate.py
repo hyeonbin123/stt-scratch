@@ -54,6 +54,25 @@ def load_model(path: Path, device: torch.device) -> tuple[ChunkConformerCTC, dic
     return model.to(device).eval(), state
 
 
+# 체크포인트와 어휘 파일이 같은 학습에서 나온 것인지 크기로 확인한다. 체크포인트에는 config·가중치만
+# 있고 어휘나 그 해시가 없으며, manifests/vocab.json은 데이터 준비(scripts/prepare_data.py)를 다시
+# 돌리면 덮어써지므로 둘이 어긋날 수 있다. 어긋나면: 어휘가 모델 출력보다 작으면 Vocab.decode의
+# tokens[i]가 IndexError를 내 서비스 연결이 끊기거나 평가가 중간에 죽고, 크면 그 id들이 '있을 수 없는
+# 글자'로 조용히 디코딩된다. 크기가 같고 순서만 다른 경우는 이 검사로 잡을 수 없으므로(서비스는 /info의
+# vocab_sha256으로 어떤 어휘 파일이었는지 남긴다) 크기만 본다. SystemExit를 쓰는 이유: 부르는 곳이 모두
+# 시작 시점(서버 앱 만들기, 평가·측정 도구의 main)이고, 어긋난 조합으로 계속 돌면 잘못된 수치·자막이
+# 그대로 기록되므로 바로 멈추는 것이 맞다.
+# 호출 위치: main, service.server.build_app, scripts/followup.py·scripts/stage6.py의 main. 봉인 test 도구
+# (scripts/stage7.py)와 학습(train.py)은 그대로 둔다(봉인 test 보호 장치와 학습 코드는 이 검사 없이 기록됐다).
+def check_vocab(model: ChunkConformerCTC, vocab: Vocab) -> None:
+    """어휘 토큰 수가 모델 출력 크기(ModelConfig.vocab_size)와 다르면 두 값을 적은 SystemExit를 낸다."""
+    if len(vocab) != model.cfg.vocab_size:
+        raise SystemExit(
+            f"vocabulary mismatch: the vocabulary has {len(vocab)} tokens but the checkpoint's output layer "
+            f"has {model.cfg.vocab_size}; manifests/vocab.json and the checkpoint come from different runs"
+        )
+
+
 # 그 밖(CPU, --fp32 모델)에서는 autocast가 꺼진다. 학습과 같은 정밀도로 재야 dev 수치가 학습 조건과 맞는다.
 def autocast(device, amp: bool):
     """모든 디코딩·손실 경로가 공유하는 정밀도 문맥: CUDA이고 amp면(학습 기본값) fp16 autocast."""
@@ -266,6 +285,7 @@ def main(argv: list[str] | None = None) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, _ = load_model(ROOT / args.checkpoint, device)
     vocab = Vocab.load(ROOT / "manifests" / "vocab.json")
+    check_vocab(model, vocab)  # 어휘 토큰 수 ≠ 체크포인트 출력 크기면 디코딩 전에 멈춘다
     spec = ChunkSpec(args.chunk, args.left if args.chunk else -1)
     result = evaluate_manifest(
         model,

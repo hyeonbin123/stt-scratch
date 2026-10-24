@@ -37,7 +37,7 @@ import torch
 # 프로젝트 내부 모듈: 평가 경로(offline·실제 캐시 스트리밍 디코딩, 채점, autocast), 캐시 스트리밍 인코더,
 # 서비스와 같은 세션·끝점 설정, 첫 패킷 보정 표본 수.
 from stt_scratch.data import PcmStore, read_manifest
-from stt_scratch.evaluate import autocast, decode_offline, decode_streaming, load_model, score
+from stt_scratch.evaluate import autocast, check_vocab, decode_offline, decode_streaming, load_model, score
 from stt_scratch.model.features import FIRST_PACKET_EXTRA, LogMel
 from stt_scratch.model.mask import ChunkSpec
 from stt_scratch.model.streaming import StreamingEncoder
@@ -429,6 +429,7 @@ def main(argv: list[str] | None = None) -> None:
     device = torch.device(args.device)
     model, _ = load_model(ROOT / args.checkpoint, device)
     vocab = Vocab.load(ROOT / "manifests" / "vocab.json")
+    check_vocab(model, vocab)  # 어휘 토큰 수 ≠ 체크포인트 출력 크기면 측정 전에 멈춘다(잘못된 수치 기록 방지)
     t0 = time.perf_counter()
     result = {"grid": cmd_grid, "h61": cmd_h61, "session": cmd_session, "drift": cmd_drift}[args.command](
         args, model, vocab, device

@@ -7,7 +7,9 @@
 기본값은 6단계에서 고른 구성에 7단계 뒤 후속 측정(docs/experiments.md 규칙 변경 26)의 판정을 더한 것이다.
 서버는 시작할 때 가능한 마지막 부분 청크 길이마다 한 번씩 flush하고, 2차 패스 길이 묶음마다 전체 문맥
 디코딩을 한 번씩 돌리며, graph 경로면 정상 상태 step의 CUDA Graph를 캡처해(예열) 첫 클라이언트가 1회성 준비
-시간을 겪지 않게 한다.
+시간을 겪지 않게 한다. 캡처가 실패하면 경고를 남기고 이후 세션의 step 경로를 fast로 바꾼다(출력은 같고 /info에
+사유가 남는다). 어휘 파일의 토큰 수가 체크포인트 출력 크기와 다르면 시작하지 않는다. CPU 장치에서는 torch 연산
+스레드를 기본 1로 둔다(README·docs의 CPU 수치를 잰 조건, --threads).
 
 프로토콜: 클라이언트는 ws://host:port/ws를 열고 little-endian int16 mono 16 kHz PCM을 바이너리 프레임으로
 보낸다(크기는 짝수 바이트로 1 MiB = 약 32.8 s까지 자유, 320 ms = 10,240바이트 권장). 서버는 JSON 텍스트
@@ -22,7 +24,8 @@
 서버가 연결을 닫는 코드: 1007 = 홀수 바이트 프레임(int16 표본으로 나뉘지 않음), 1009 = 1 MiB를 넘는 프레임
 (uvicorn에서는 전송 계층이 오류 줄 없이 먼저 닫는다), 1013 = 동시 세션 상한(8개)이 차 있음(나중에 다시 시도),
 1008 = 다른 사이트의 Origin(수락 전에 닫음).
-GET /은 web/index.html(마이크 클라이언트 페이지), GET /info는 서버 설정을 준다. 인증이 없으므로 로컬
+GET /은 web/index.html(마이크 클라이언트 페이지), GET /info는 서버 설정과 상태를 준다(체크포인트·어휘 파일
+SHA-256, 실제 step 경로와 CUDA Graph 캡처 상태, torch 스레드 수, 프레임·세션 상한). 인증이 없으므로 로컬
 데모 전용이며 기본으로 127.0.0.1에만 연다. Host 헤더가 허용 목록(기본 127.0.0.1·localhost·[::1], --host 값,
 --allowed-host로 더한 값) 밖이면 HTTP·WebSocket 모두 400으로 거부해 DNS 리바인딩을 막는다. 모든 HTTP 응답에
 보안 헤더(페이지에는 해시 기반 CSP)를 붙이고, 대화형 API 문서는 끄며, Origin이 다른 사이트인 WebSocket은
@@ -64,15 +67,17 @@ from dataclasses import asdict
 from pathlib import Path
 
 # FastAPI: HTTP 경로·WebSocket·미들웨어, TrustedHostMiddleware: Host 허용 목록(Starlette 것을 FastAPI가 다시
-# 내보냄), uvicorn: ASGI 서버 실행. 프로젝트 모듈: 체크포인트 로드(evaluate.load_model), LogMel, 청크 설정,
-# 끝점 설정, 세션과 예열, 어휘.
+# 내보냄), uvicorn: ASGI 서버 실행. 프로젝트 모듈: 체크포인트 로드와 어휘 크기 검사(evaluate.load_model·
+# check_vocab), 그래프 캡처 상태(model.streaming.graph_status; 테스트가 바꿔 끼울 수 있게 모듈로 가져온다),
+# LogMel, 청크 설정, 끝점 설정, 세션과 예열, 어휘.
 import torch
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from stt_scratch.evaluate import load_model
+from stt_scratch.evaluate import check_vocab, load_model
+from stt_scratch.model import streaming
 from stt_scratch.model.features import LogMel
 from stt_scratch.model.mask import ChunkSpec
 from stt_scratch.service.endpoint import EndpointConfig
@@ -289,18 +294,45 @@ def build_app(
     hosts = check_allowed_hosts(DEFAULT_ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts)
     dev = torch.device(device)
     model, _ = load_model(checkpoint, dev)
-    vocab = Vocab.load(ROOT / "manifests" / "vocab.json")
+    vocab_path = ROOT / "manifests" / "vocab.json"
+    vocab = Vocab.load(vocab_path)
+    # 어휘 토큰 수 ≠ 체크포인트 출력 크기면 여기서 멈춘다(SystemExit, evaluate.check_vocab). 전에는
+    # 검사가 없어 어휘가 작으면 디코딩 중 IndexError로 연결이 끊기고, 크기가 같고 순서만 다르면 조용히
+    # 다른 글자를 냈다. 순서 차이는 크기로 잡을 수 없으므로 /info의 vocab_sha256으로 어떤 어휘
+    # 파일이었는지 남긴다.
+    check_vocab(model, vocab)
     logmel = LogMel().to(dev)
     spec = ChunkSpec(chunk, left)
     use_amp = (dev.type == "cuda") if amp is None else amp
     step_path = resolve_step_path(step_path, device)
-    # 연결마다 같은 설정으로 세션을 만든다(step 경로·2차 패스는 7단계 뒤 후속 옵션, 규칙 변경 26).
+    # 연결마다 같은 설정으로 세션을 만든다(step 경로·2차 패스는 7단계 뒤 후속 옵션, 규칙 변경 26). ws 처리기가
+    # 이 dict를 그대로 읽으므로 아래에서 step_path를 바꾸면 이후 연결에 바로 적용된다.
     options = {"amp": use_amp, "step_path": step_path, "final_pass": final_pass}
     # 예열(session.warm_up): 부분 청크 길이마다 한 번씩 flush해 첫 클라이언트가 새 텐서 모양의 1회성 준비
     # 시간을 겪지 않게 한다. 걸린 시간은 /info의 warm_up_s로 보인다.
     warm_s = (
         warm_up(StreamSession(model, vocab, spec, logmel, endpoint, reset_cache, **options)) if warm else 0.0
     )
+    # CUDA Graph 캡처 상태(graph 경로로 예열했을 때만 값이 있고 그 밖에는 둘 다 None). 정상 상태 stepper는
+    # 모델·청크 설정마다 하나를 모든 세션이 공유하므로(model/streaming.py _STEPPERS) 예열 중 캡처가 실패하면
+    # 그 뒤 모든 연결이 그래프 없는 고정 버퍼 코드로 돈다. 전에는 stepper가 사유만 남기고 /info는 인자로 받은
+    # 'graph'를 그대로 보여 측정 결과 파일(scripts/stream_client.py의 -meta.json)에도 graph로 적혔다. 이제
+    # 실패면 경고를 남기고 이후 세션의 step 경로를 fast로 바꿔 /info가 실제 경로를 적게 한다. fast와 graph는
+    # 출력 동일성 관문(규칙 변경 26 P3)에서 같은 출력이 확인된 경로라 자막은 같고, 달라지는 것은 청크당 계산
+    # 시간(graph 정상 상태 p90 8.5 ms → fast 수준)뿐이다. CPU의 graph 경로는 그래프를 캡처하지 않으므로
+    # captured False·failed None 그대로 둔다. 사유는 앞 200자만 싣는다(stepper는 500자까지 보관).
+    graph_captured = graph_failed = None
+    if warm and step_path == "graph":
+        status = streaming.graph_status(model, spec)
+        graph_captured = status["captured"]
+        if status["failed"] is not None:
+            graph_failed = status["failed"][:200]
+            log.warning(
+                "CUDA Graph capture failed during warm-up; sessions use the fast step path instead (same "
+                "output, more kernel launches per chunk): %s",
+                graph_failed,
+            )
+            step_path = options["step_path"] = "fast"
     # 대화형 API 문서(/docs, /redoc)는 쓰지 않고 외부 CDN 스크립트를 불러오므로 끈다(docs/security.md).
     app = FastAPI(title="stt-scratch streaming", docs_url=None, redoc_url=None)
     page = WEB.read_text(encoding="utf-8")
@@ -323,9 +355,11 @@ def build_app(
         response.headers.setdefault("Content-Security-Policy", API_CSP)
         return response
 
-    # /info 내용: 체크포인트와 그 SHA-256, 청크·좌측 문맥, 장치·정밀도, 끝점 설정, 캐시 정책, 어휘 크기, 예열
-    # 시간. 페이지가 설정을 표시하고, 측정 스크립트가 서버가 등록한 구성으로 떠 있는지 대조하며 결과 파일에
-    # 출처로 남긴다(규칙 변경 24, docs/ai-verification.md 6단계 검토 반영).
+    # /info 내용: 체크포인트와 그 SHA-256, 청크·좌측 문맥, 장치·정밀도, 끝점 설정, 캐시 정책, 실제 step 경로와
+    # CUDA Graph 캡처 상태, 2차 패스, 어휘 크기와 어휘 파일 SHA-256, torch 연산 스레드 수, 프레임·세션 상한,
+    # 예열 시간. 페이지가 설정을 표시하고, 측정 스크립트가 서버가 등록한 구성으로 떠 있는지 대조하며 결과
+    # 파일에 출처로 남긴다(규칙 변경 24, docs/ai-verification.md 6단계 검토 반영). 값은 앱을 만들 때 한 번
+    # 정한다(스레드 수는 main()이 모델을 올리기 전에 정하므로 예열·세션과 같은 값이다).
     info = {
         "checkpoint": shown_path(checkpoint),
         "checkpoint_sha256": hashlib.sha256(Path(checkpoint).read_bytes()).hexdigest(),
@@ -337,8 +371,14 @@ def build_app(
         "endpoint": asdict(endpoint),
         "reset_cache_on_endpoint": reset_cache,
         "step_path": step_path,
+        "graph_captured": graph_captured,
+        "graph_failed": graph_failed,
         "final_pass": final_pass,
         "vocab": len(vocab),
+        "vocab_sha256": hashlib.sha256(vocab_path.read_bytes()).hexdigest(),
+        "cpu_threads": torch.get_num_threads(),
+        "max_frame_bytes": max_frame_bytes,
+        "max_sessions": max_sessions,
         "warm_up_s": round(warm_s, 2),
     }
 
@@ -488,11 +528,22 @@ def build_parser() -> argparse.ArgumentParser:
         "자막을 대체). 후속 측정 P1 채택으로 기본값 full(GPU 2차 패스 p90 55 ms, CPU 1스레드 195 ms). none = "
         "6단계까지의 1-pass 확정 자막",
     )
+    p.add_argument(
+        "--threads",
+        type=int,
+        default=None,
+        metavar="N",
+        help="torch 연산(intra-op) 스레드 수(1 이상). 기본값은 --device가 cpu면 1(README·docs의 CPU "
+        "청크 계산·2차 패스 수치를 잰 1스레드 조건과 같게; 다른 프로그램이 CPU를 쓰는 중에 여러 "
+        "스레드로 돌리면 step이 수 초씩 늦어진 적이 있음), cuda면 바꾸지 않음(프로세스 기본값). "
+        "실제 값은 /info의 cpu_threads",
+    )
     return p
 
 
-# 명령행 실행: 인자를 읽어 Host 허용 목록을 만들고(잘못된 패턴은 모델을 올리기 전에 거부), 인증 없는 서버를
-# 루프백 밖에 열거나 Host 검사를 끄면 경고를 남긴 뒤, 앱을 만들어 uvicorn으로 띄운다. uvicorn에는 WebSocket
+# 명령행 실행: 인자를 읽어 Host 허용 목록을 만들고(잘못된 패턴은 모델을 올리기 전에 거부), torch 연산 스레드
+# 수를 정하고(--threads, CPU 장치 기본 1), 인증 없는 서버를 루프백 밖에 열거나 Host 검사를 끄면 경고를 남긴
+# 뒤, 앱을 만들어 uvicorn으로 띄운다. uvicorn에는 WebSocket
 # 메시지 상한(ws_max_size = MAX_FRAME_BYTES, 넘으면 전송 계층이 오류 줄 없이 1009로 닫음)과 동시 연결·작업
 # 상한(limit_concurrency, 넘으면 새 HTTP 요청에 503)을 함께 넘긴다. ping 간격·시간 제한은 uvicorn 기본(20 s)
 # 그대로다. 경고는 uvicorn이 로깅을 설정하기 전에 나가므로 파이썬 기본 처리기(stderr)가 찍는다.
@@ -504,6 +555,20 @@ def main(argv: list[str] | None = None) -> None:
         allowed = check_allowed_hosts(allowed_hosts_for(args.host, args.allowed_host))
     except ValueError as e:
         raise SystemExit(f"--allowed-host: {e}") from None
+    # torch 연산 스레드 수. --threads가 없으면 장치가 cpu일 때만 1(6단계·후속 측정의 'CPU 1스레드' 조건과
+    # 같게: scripts/stage6.py·scripts/followup.py가 torch.set_num_threads(1)로 잰 값이 README·docs의 CPU
+    # 수치다), cuda면 프로세스 기본값 그대로. 모델을 올리기 전에 정해야 예열과 /info의 cpu_threads가 세션과
+    # 같은 조건이 된다. 여기(main)에서만 바꾸고 build_app은 건드리지 않아 테스트 프로세스의 스레드 수에는
+    # 영향이 없다. 왜 기본 1인가: 다른 프로그램이 CPU를 쓰는 중에 여러 스레드로 돌리면 step 하나가 수 초씩
+    # 걸린 관찰이 있고(scripts/followup.py 관문 측정 주석), 기본 스레드 수(이 PC 6코어)로 돈 서버의 지연은
+    # 기록된 수치가 재는 조건이 아니었다.
+    threads = args.threads
+    if threads is None and torch.device(args.device).type == "cpu":
+        threads = 1
+    if threads is not None:
+        if threads < 1:
+            raise SystemExit(f"--threads must be at least 1, got {threads}")
+        torch.set_num_threads(threads)
     if not is_loopback_host(args.host):
         log.warning(
             "--host %s is not a loopback address: this unauthenticated server accepts connections from other "
