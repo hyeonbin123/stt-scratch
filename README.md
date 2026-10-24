@@ -52,7 +52,7 @@ uv run pytest -q
 uv run ruff format src scripts tests && uv run ruff check src scripts tests
 ```
 
-테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금), 후속 옵션(빠른 step 경로가 eager와 비트 단위로 같음, 2차 패스 = 세그먼트의 전체 문맥 디코딩), 서버 상태 보고(`/info`의 어휘 SHA-256·스레드 수·CUDA Graph 캡처 상태, 캡처 실패 시 fast 폴백과 경고, 어휘 크기 검사, CPU 장치의 기본 1스레드, `--step-path`·`--final-pass`가 세션에 실제로 전달됨), 봉인 test 사후 분석(군집이 발화이면 군집 부트스트랩이 등록 부트스트랩과 비트 단위로 같음, 저장된 보고서 재현, whisper 앵커와 짝지을 때 결합이 일대일이고 정답이 같아야 함; 실데이터가 필요한 재현 확인은 `data/raw`와 whisper-ko-ft 체크아웃이 없으면 건너뜀), 브라우저 자막 페이지 스크립트의 연결·오디오 수명 관리(`tests/web_page_harness.js`가 Node.js vm의 가짜 DOM·WebSocket·Web Audio·가상 타이머로 `web/index.html`의 스크립트를 돌림: 멈춤 직후 재시작, 시작 실패, 마이크 트랙 정지, 16 kHz가 아닐 때 전송 안 함, endpoint 처리; `node`가 없으면 건너뜀)를 확인한다. CUDA가 없으면 fp16·CUDA Graph 테스트는 건너뛴다. GitHub Actions(`.github/workflows/ci.yml`)가 push마다 CPU에서 ruff와 pytest를 돈다.
+테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금), 후속 옵션(빠른 step 경로가 eager와 비트 단위로 같음, 2차 패스 = 세그먼트의 전체 문맥 디코딩), 긴 세션의 RoPE 위치 재기준(임계 미만 스트림은 비트 단위로 그대로, 재기준해도 세 step 경로가 비트 단위로 같고 0에서 시작한 스트림과 1e-4 안, 반복 재기준 뒤에도 청크 격자·좌측 문맥 유지), 체크포인트 원자적 저장(임시 파일에 다 쓴 뒤 바꿔 넣으므로 저장 중 오류·중단에도 이전 `last.pt`가 바이트 단위로 그대로), 서버 상태 보고(`/info`의 어휘 SHA-256·스레드 수·CUDA Graph 캡처 상태, 캡처 실패 시 fast 폴백과 경고, 어휘 크기 검사, CPU 장치의 기본 1스레드, `--step-path`·`--final-pass`가 세션에 실제로 전달됨), 봉인 test 사후 분석(군집이 발화이면 군집 부트스트랩이 등록 부트스트랩과 비트 단위로 같음, 저장된 보고서 재현, whisper 앵커와 짝지을 때 결합이 일대일이고 정답이 같아야 함; 실데이터가 필요한 재현 확인은 `data/raw`와 whisper-ko-ft 체크아웃이 없으면 건너뜀), 브라우저 자막 페이지 스크립트의 연결·오디오 수명 관리(`tests/web_page_harness.js`가 Node.js vm의 가짜 DOM·WebSocket·Web Audio·가상 타이머로 `web/index.html`의 스크립트를 돌림: 멈춤 직후 재시작, 시작 실패, 마이크 트랙 정지, 16 kHz가 아닐 때 전송 안 함, endpoint 처리; `node`가 없으면 건너뜀)를 확인한다. CUDA가 없으면 fp16·CUDA Graph 테스트는 건너뛴다. GitHub Actions(`.github/workflows/ci.yml`)가 push마다 CPU에서 ruff와 pytest를 돈다.
 
 ## 학습·평가
 
@@ -111,8 +111,8 @@ scripts/           데이터 내려받기·재고·준비, mel 통계, 벤치, �
                    봉인 test 사후 분석(sealed_breakdown, cluster_ci)
 tests/             게이트 테스트(test_model), 전처리(test_prepare_data), 서비스(test_service),
                    4단계 지연 도우미(test_latency), 봉인 test 보호 장치(test_stage7_guards),
-                   빠른 step 경로·조기 종료(test_fast_streaming), 끝점 뒤 2차 패스(test_final_pass),
-                   사후 분석(test_sealed_breakdown, test_cluster_bootstrap),
+                   빠른 step 경로·조기 종료·위치 재기준(test_fast_streaming), 끝점 뒤 2차 패스(test_final_pass),
+                   체크포인트 원자적 저장(test_train_io), 사후 분석(test_sealed_breakdown, test_cluster_bootstrap),
                    브라우저 페이지 스크립트(test_web_page + Node.js 하네스 web_page_harness.js)
 docs/              survey/(조사·결정), experiments.md(규칙·결과), plan.md, data.md, ai-verification.md, security.md
 manifests/         분할 매니페스트, 어휘, mel 통계 (커밋)
