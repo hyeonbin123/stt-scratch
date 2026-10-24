@@ -180,10 +180,23 @@ def test_server_passes_the_followup_options(tmp_path) -> None:
     VOCAB.save(tmp_path / "manifests" / "vocab.json")
     original = server.ROOT
     server.ROOT = tmp_path
+    # TestClient의 Host(testserver)를 허용 목록에 넣는다(기본 목록은 루프백 이름만, tests/test_service.py).
+    hosts = ["testserver"]
     try:
-        default = server.build_app(ckpt, 8, 64, "cpu", EndpointConfig(), False, warm=False)
+        default = server.build_app(
+            ckpt, 8, 64, "cpu", EndpointConfig(), False, warm=False, allowed_hosts=hosts
+        )
         app = server.build_app(
-            ckpt, 8, 64, "cpu", EndpointConfig(), False, warm=False, step_path="fast", final_pass="full"
+            ckpt,
+            8,
+            64,
+            "cpu",
+            EndpointConfig(),
+            False,
+            warm=False,
+            step_path="fast",
+            final_pass="full",
+            allowed_hosts=hosts,
         )
     finally:
         server.ROOT = original

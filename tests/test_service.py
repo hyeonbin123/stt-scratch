@@ -2,21 +2,28 @@
 
 스트리밍 서비스(service/endpoint, session, server)의 동작을 확인한다: 끝점 규칙 시점, 끝점을 끈 세션 결과 ==
 배치 청크 마스크 greedy, 끝점이 버퍼 음성을 잃지 않는지, fp16 정밀도, WebSocket 왕복과 보안 헤더·Origin
-검사, CSP 해시, 서버 예열.
+검사, Host 허용 목록(DNS 리바인딩 방어), WebSocket 입력·자원 상한(홀수 바이트 프레임, 큰 프레임, 동시 세션
+수), 명령행 실행이 uvicorn에 넘기는 전송 상한과 경고, CSP 해시, 서버 예열.
 """
 
 # [방식] 작은 모델(d=32, 2층)과 8토큰 어휘로 CPU에서 돌린다. 서버는 실제 포트에 띄우지 않고 FastAPI
-# TestClient로 앱을 직접 호출한다. 모든 테스트가 학습된 가중치 없이 '구조적 성질'만 본다.
+# TestClient로 앱을 직접 호출한다. 모든 테스트가 학습된 가중치 없이 '구조적 성질'만 본다. TestClient는 요청의
+# Host를 'testserver'로 보내므로, 기본 Host 허용 목록(루프백 이름만) 자체를 보는 테스트가 아니면 앱을
+# allowed_hosts=["testserver"]로 만든다. TestClient에는 전송 계층의 메시지 크기 상한이 없어서 크기 상한은 앱
+# 처리기 검사로 확인하고, uvicorn에 넘기는 값(ws_max_size·limit_concurrency)은 명령행 실행 테스트에서 본다.
 
 from __future__ import annotations
 
 import json
+import logging
 
 # FastAPI TestClient: 프로세스 안에서 HTTP·WebSocket 요청을 앱에 바로 보내는 시험용 클라이언트. starlette
-# WebSocketDisconnect: 서버가 연결을 거부했는지 확인할 때 쓴다.
+# WebSocketDisconnect: 서버가 연결을 닫았는지(종료 코드 포함) 확인할 때 쓴다. WebSocketDenialResponse: 수락
+# 전에 HTTP 거부 응답(Host 허용 목록 밖이면 400)으로 막힌 WebSocket을 TestClient가 알리는 예외다.
 import pytest
 import torch
 from fastapi.testclient import TestClient
+from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from stt_scratch.model.config import ModelConfig
@@ -191,7 +198,9 @@ def test_websocket_round_trip(tmp_path) -> None:
     (tmp_path / "manifests").mkdir()
     VOCAB.save(tmp_path / "manifests" / "vocab.json")
     try:
-        app = server.build_app(ckpt, 8, 64, "cpu", EndpointConfig(), True)
+        # TestClient의 Host(testserver)를 허용 목록에 넣는다. 기본 목록(루프백 이름만)은 아래 Host 테스트가
+        # 본다.
+        app = server.build_app(ckpt, 8, 64, "cpu", EndpointConfig(), True, allowed_hosts=["testserver"])
     finally:
         server.ROOT = original
     client = TestClient(app)
@@ -248,6 +257,196 @@ def test_page_csp_hashes_match_the_inline_blocks() -> None:
         "http://127.0.0.1:8765", "127.0.0.1:8765"
     )
     assert not server.same_origin("http://evil.example", "127.0.0.1:8765")
+
+
+# 도우미: 시험용 작은 모델 체크포인트와 어휘를 tmp_path에 만들고 server.build_app으로 앱을 만든다(CPU, 청크 8,
+# 좌측 64, 끝점 기본값, 끝점에서 캐시 초기화). build_app이 server.ROOT 아래 manifests/vocab.json을 읽으므로
+# ROOT를 잠시 tmp_path로 바꾸고 finally로 되돌린다. kwargs(allowed_hosts·max_frame_bytes·max_sessions·warm
+# 등)는 그대로 넘긴다. 같은 tmp_path로 여러 번 불러도 된다(파일을 덮어쓴다).
+def make_app(tmp_path, **kwargs):
+    from stt_scratch.service import server
+
+    model = tiny_model()
+    ckpt = tmp_path / "m.pt"
+    torch.save({"model": model.state_dict(), "config": model.cfg.__dict__}, ckpt)
+    (tmp_path / "manifests").mkdir(exist_ok=True)
+    VOCAB.save(tmp_path / "manifests" / "vocab.json")
+    original = server.ROOT
+    server.ROOT = tmp_path
+    try:
+        return server.build_app(ckpt, 8, 64, "cpu", EndpointConfig(), True, **kwargs)
+    finally:
+        server.ROOT = original
+
+
+# 도우미: flush를 보낸 뒤 서버 메시지를 stats가 올 때까지(최대 200개) 읽어 돌려준다. 서버는 flush에 항상
+# 이벤트들 다음 stats 한 개로 답하므로 유한 루프로 충분하다(무작위 작은 모델은 무음에도 토큰을 낼 수 있어
+# final이 먼저 올 수 있다).
+def read_until_stats(ws) -> list[dict]:
+    got: list[dict] = []
+    for _ in range(200):
+        got.append(json.loads(ws.receive_text()))
+        if got[-1]["type"] == "stats":
+            break
+    return got
+
+
+# 확인: 기본 Host 허용 목록(127.0.0.1·localhost·[::1])은 루프백 이름(포트 유무, IPv6 대괄호 표기)으로 온
+# 요청만 받는다. 다른 이름으로 온 HTTP 요청은 400이고 그 거부 응답에도 보안 헤더가 붙으며, Host·Origin이 모두
+# 공격자 도메인인 WebSocket은 수락 전에 400 거부 응답으로 막힌다. 허용된 Host에서 같은 출처 페이지가 여는
+# 연결은 그대로 된다. 왜: 공격자가 자기 도메인의 DNS를 127.0.0.1로 다시 가리키면(DNS 리바인딩) 브라우저는
+# Host와 Origin에 모두 그 도메인을 실어 보내므로 'Origin == Host' 검사만으로는 막지 못했다(보안 검토 재현: 그
+# 연결이 수락되고 flush에 stats가 돌아왔으며, 같은 Host의 GET /info도 200이었다).
+def test_host_allow_list_blocks_dns_rebinding(tmp_path) -> None:
+    from stt_scratch.service import server
+
+    client = TestClient(make_app(tmp_path, warm=False))  # allowed_hosts 기본값
+    bad = client.get("/info", headers={"host": "attacker.example:8765"})
+    assert bad.status_code == 400
+    assert bad.headers["x-content-type-options"] == "nosniff" and bad.headers["x-frame-options"] == "DENY"
+    assert bad.headers["content-security-policy"] == server.API_CSP
+    assert client.get("/info").status_code == 400  # TestClient 기본 Host(testserver)도 기본 목록 밖이다
+    for host in ("127.0.0.1:8765", "localhost:8765", "[::1]:8765", "127.0.0.1"):
+        assert client.get("/info", headers={"host": host}).status_code == 200
+    rebound = {"host": "attacker.example:8765", "origin": "http://attacker.example:8765"}
+    with pytest.raises(WebSocketDenialResponse) as denied:
+        with client.websocket_connect("/ws", headers=rebound):
+            pass
+    assert denied.value.status_code == 400
+    local = {"host": "127.0.0.1:8765", "origin": "http://127.0.0.1:8765"}
+    with client.websocket_connect("/ws", headers=local) as ws:
+        ws.send_text("flush")
+        assert read_until_stats(ws)[-1]["type"] == "stats"
+
+
+# 확인: 명령행의 Host 허용 목록 계산. 기본은 루프백 이름 셋이고, --host가 와일드카드(0.0.0.0·::)가 아니면 그
+# 값을 브라우저가 Host 헤더에 쓰는 모양(소문자, IPv6는 대괄호)으로 더하며, --allowed-host 값을 중복 없이 뒤에
+# 붙인다. 루프백 판정(경고 여부)과, 잘못된 패턴(빈 값, 맨 앞 '*.' 밖의 '*')을 서버가 뜨기 전에 거부하는 것도
+# 본다. 왜: Starlette TrustedHostMiddleware는 패턴을 첫 요청 때 검사하므로(assert) 잘못된 값이면 서버가 뜬
+# 뒤에야 실패한다.
+def test_allowed_hosts_for_the_command_line() -> None:
+    from stt_scratch.service import server
+
+    default = ["127.0.0.1", "localhost", "[::1]"]
+    assert server.allowed_hosts_for("127.0.0.1") == default
+    assert server.allowed_hosts_for("::1") == default and server.allowed_hosts_for("localhost") == default
+    assert server.allowed_hosts_for("0.0.0.0") == default and server.allowed_hosts_for("::") == default
+    assert server.allowed_hosts_for("192.168.0.7") == [*default, "192.168.0.7"]
+    assert server.allowed_hosts_for("FE80::1") == [*default, "[fe80::1]"]
+    extra = ["Host.Docker.Internal", "localhost", "*.lan"]
+    assert server.allowed_hosts_for("0.0.0.0", extra) == [*default, "host.docker.internal", "*.lan"]
+    assert all(server.is_loopback_host(h) for h in ("127.0.0.1", "127.0.0.2", "localhost", "::1", "[::1]"))
+    assert not any(server.is_loopback_host(h) for h in ("0.0.0.0", "::", "192.168.0.7", "stt.lan"))
+    assert server.check_allowed_hosts(["testserver", "*.lan", "*"]) == ["testserver", "*.lan", "*"]
+    for bad in ([], [""], ["stt*.lan"], ["*lan"]):
+        with pytest.raises(ValueError):
+            server.check_allowed_hosts(bad)
+
+
+# 확인: 명령행 실행(main)이 계산한 Host 허용 목록을 build_app에 넘기고, uvicorn에 WebSocket 메시지 상한(1
+# MiB)과 동시 처리 상한(16)을 넘기며, --host가 루프백이 아니면 '인증 없는 서버를 외부에 연다' 경고를,
+# --allowed-host '*'면 Host 검사가 꺼진다는 경고를 남긴다. 모델을 올리거나 포트를 열지 않도록 build_app과
+# uvicorn.run을 기록용 가짜로 바꾼다.
+def test_main_passes_the_allow_list_and_transport_limits(monkeypatch, caplog) -> None:
+    from stt_scratch.service import server
+
+    seen: dict = {}
+    monkeypatch.setattr(server, "build_app", lambda *a, **k: seen.update(build=k) or "app")
+    monkeypatch.setattr(server.uvicorn, "run", lambda app, **k: seen.update(app=app, run=k))
+    caplog.set_level(logging.WARNING, logger="stt_scratch.service.server")
+
+    def warnings() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.name == "stt_scratch.service.server"]
+
+    server.main([])
+    assert seen["app"] == "app" and seen["build"]["allowed_hosts"] == ["127.0.0.1", "localhost", "[::1]"]
+    assert (seen["run"]["host"], seen["run"]["port"]) == ("127.0.0.1", 8765)
+    assert seen["run"]["ws_max_size"] == 1 << 20 and seen["run"]["limit_concurrency"] == 16
+    assert not warnings()  # 루프백에서는 경고가 없다
+    server.main(["--host", "0.0.0.0", "--allowed-host", "stt.lan", "--allowed-host", "192.168.0.7"])
+    assert seen["build"]["allowed_hosts"] == ["127.0.0.1", "localhost", "[::1]", "stt.lan", "192.168.0.7"]
+    assert seen["run"]["host"] == "0.0.0.0" and seen["run"]["ws_max_size"] == 1 << 20
+    assert len(warnings()) == 1 and "unauthenticated" in warnings()[0]
+    caplog.clear()
+    server.main(["--allowed-host", "*"])
+    assert seen["build"]["allowed_hosts"][-1] == "*"
+    assert len(warnings()) == 1 and "disables the Host check" in warnings()[0]
+
+
+# 확인: push_pcm16은 홀수 바이트(int16 표본 경계가 깨진 입력)를 원인이 드러나는 ValueError로 거부하고, 빈
+# 프레임은 이벤트 없이 지나간다. 왜: 세션을 라이브러리로 직접 쓰는 사람에게 np.frombuffer의 'buffer size must
+# be a multiple of element size' 대신 무엇이 잘못됐는지 알린다(서버 처리기는 이 앞에서 close 1007로 답한다).
+def test_push_pcm16_rejects_odd_byte_counts() -> None:
+    session = StreamSession(tiny_model(), VOCAB, ChunkSpec(8, 64), LogMel(), EndpointConfig())
+    with pytest.raises(ValueError, match="even number of bytes"):
+        session.push_pcm16(b"\x01\x02\x03")
+    assert session.push_pcm16(b"") == []
+
+
+# 확인: 홀수 바이트 바이너리 프레임은 오류 JSON 한 줄({"type": "error", "reason": ...}) 뒤 close 1007(메시지
+# 형식에 맞지 않는 데이터)로 끝난다. 왜: 전에는 np.frombuffer의 ValueError가 처리기 밖으로 나가 트레이스백을
+# 남기고 1011로 끊겼다(보안 검토 재현).
+def test_odd_length_frame_is_refused_with_1007(tmp_path) -> None:
+    client = TestClient(make_app(tmp_path, warm=False, allowed_hosts=["testserver"]))
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(b"\x01\x02\x03")
+        error = json.loads(ws.receive_text())
+        assert error["type"] == "error" and "even" in error["reason"]
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+    assert closed.value.code == 1007
+
+
+# 확인: 메시지 상한은 1 MiB(16 kHz int16 약 32.8 s)이고, 그보다 큰 바이너리 프레임은 처리하기 전에 오류 JSON
+# 한 줄 뒤 close 1009(메시지가 너무 큼)로 끝난다. 상한과 같은 크기는 처리한다(작은 상한 10,240바이트로 경계
+# 확인). 왜: uvicorn 기본 상한 16 MiB면 한 프레임에 약 524 s 오디오가 들어와 인코더 계산이 이벤트 루프를 오래
+# 붙잡는다(다른 연결의 자막이 멈춘다). 실제 서버에서는 uvicorn ws_max_size가 같은 상한으로 전송 계층에서 먼저
+# 1009로 닫는다.
+def test_oversized_frame_is_refused_with_1009(tmp_path) -> None:
+    from stt_scratch.service import server
+
+    assert server.MAX_FRAME_BYTES == 1 << 20
+    client = TestClient(make_app(tmp_path, warm=False, allowed_hosts=["testserver"]))
+    with client.websocket_connect("/ws") as ws:
+        ws.send_bytes(bytes((1 << 20) + 2))
+        assert json.loads(ws.receive_text())["type"] == "error"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+    assert closed.value.code == 1009
+    small = TestClient(make_app(tmp_path, warm=False, allowed_hosts=["testserver"], max_frame_bytes=10240))
+    with small.websocket_connect("/ws") as ws:
+        ws.send_bytes(bytes(10240))  # 상한과 같은 크기(320 ms)는 처리한다
+        ws.send_text("flush")
+        assert read_until_stats(ws)[-1]["type"] == "stats"
+        ws.send_bytes(bytes(10242))
+        assert json.loads(ws.receive_text())["type"] == "error"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+    assert closed.value.code == 1009
+
+
+# 확인: 동시 세션 상한을 넘는 연결은 오류 JSON 한 줄 뒤 close 1013(나중에 다시 시도)으로 끝나고, 이미 열린
+# 세션은 그대로 동작하며, 세션이 끝나면 자리가 비어 새 연결을 받는다. 상한을 1로 줄여 확인한다(기본 8). 왜:
+# uvicorn의 limit_concurrency는 HTTP 요청에만 503을 내고 WebSocket 업그레이드는 막지 않으므로(uvicorn 0.54
+# 소스와 실제 서버로 확인) 앱에서 세션 수를 센다. TestClient를 with로 열어 실제 서버처럼 모든 연결이 한 이벤트
+# 루프에서 돈다.
+def test_session_cap_refuses_extra_connections_with_1013(tmp_path) -> None:
+    from stt_scratch.service import server
+
+    assert server.MAX_SESSIONS == 8
+    app = make_app(tmp_path, warm=False, allowed_hosts=["testserver"], max_sessions=1)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as first:
+            with client.websocket_connect("/ws") as second:
+                assert json.loads(second.receive_text())["type"] == "error"
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    second.receive_text()
+            assert closed.value.code == 1013
+            first.send_text("flush")
+            assert read_until_stats(first)[-1]["type"] == "stats"
+        with client.websocket_connect("/ws") as again:
+            again.send_text("flush")
+            assert read_until_stats(again)[-1]["type"] == "stats"
 
 
 # 확인: rule3을 0.32 s(청크 하나)로 줄이고 무음을 넣으면 아무것도 디코딩하지 않아도 끝점마다 세그먼트 번호가

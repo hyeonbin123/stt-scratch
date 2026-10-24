@@ -146,10 +146,19 @@ class StreamSession:
     def _autocast(self):
         return torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.amp)
 
-    # WebSocket 바이너리 프레임을 float32 −1~1로 바꿔 push_samples로 넘긴다. 크기 제한이 없어 아무 길이로
-    # 보내도 되지만, 320 ms(첫 패킷은 5,360표본) 단위로 보내야 패킷마다 청크 하나가 바로 나온다.
+    # WebSocket 바이너리 프레임을 float32 −1~1로 바꿔 push_samples로 넘긴다. 이 클래스 자체는 길이를 제한하지
+    # 않지만(서버는 프레임 상한 1 MiB를 따로 둔다, service/server.py), 320 ms(첫 패킷은 5,360표본) 단위로
+    # 보내야 패킷마다 청크 하나가 바로 나온다. 홀수 바이트는 int16 표본 경계가 깨진 입력이므로 np.frombuffer의
+    # 일반적인 오류('buffer size must be a multiple of element size') 대신 무엇이 잘못됐는지 적은 ValueError를
+    # 낸다. 서버 처리기는 이 앞에서 같은 조건을 검사해 close 1007로 답하므로 이 예외는 세션을 라이브러리로
+    # 직접 쓰는 쪽을 위한 것이다. 빈 입력(0바이트)은 이벤트 없이 지나간다.
     def push_pcm16(self, data: bytes) -> list[Event]:
-        """data: little-endian int16 mono 16 kHz 표본. 이 조각으로 생긴 이벤트들을 돌려준다."""
+        """data: little-endian int16 mono 16 kHz 표본(짝수 바이트). 이 조각으로 생긴 이벤트들을 돌려준다.
+
+        홀수 바이트면 ValueError.
+        """
+        if len(data) % 2:
+            raise ValueError(f"int16 PCM needs an even number of bytes, got {len(data)}")
         samples = torch.from_numpy(np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0)
         return self.push_samples(samples.to(self.device))
 
