@@ -3,7 +3,7 @@
 한국어 음성 인식(STT) 모델을 처음 설계부터 만들어 공개 데이터로 학습하고, 스트리밍 자막 서비스까지 묶는 프로젝트다. 사전학습 가중치는 쓰지 않는다.
 
 - 모델: 청크 인과 Conformer-CTC 약 21M 파라미터(순수 PyTorch). 인과 Conv2d 서브샘플링, RoPE 어텐션 + QK-norm + 청크 마스크, BACON식 분할 depthwise conv, 동적 청크 학습, 캐시 스트리밍 추론. 최종 모델은 6층 중간 CTC(InterCTC) 헤드와 TrimTail 이어 학습을 쓴다(2단계 자기조건 CTC → 3단계 판정으로 교체, 4단계 TrimTail 채택). 구조 선택의 근거와 기각한 대안은 `docs/survey/README.md`
-- 데이터: Zeroth-Korean(CC BY 4.0) + FLEURS 한국어(CC BY 4.0) + Common Voice 22 한국어(CC0). 라이선스·분할·정규화는 `docs/data.md`. `manifests/`와 `reports/`의 전사문·가설은 각 데이터셋의 라이선스를 따른다
+- 데이터: Zeroth-Korean(CC BY 4.0) + FLEURS 한국어(CC BY 4.0) + Common Voice 22 한국어(CC0). 라이선스·분할·정규화는 `docs/data.md`, 데이터 귀속(저작자 표시·라이선스 링크·변경 표시)은 그 문서의 "귀속" 절. `manifests/`와 `reports/`의 전사문·가설은 각 데이터셋의 라이선스를 따른다(전사문은 `docs/experiments.md`의 텍스트 정규화를 거친 것)
 - 측정 규칙(사전 등록)과 결과: `docs/experiments.md`. 단계 계획: `docs/plan.md`. AI가 만든 코드의 검증 기록: `docs/ai-verification.md`
 - 하드웨어: RTX 2080 Ti 11 GB 한 장(fp16 autocast, bf16 없음), Windows 11
 
