@@ -13,9 +13,15 @@
             자막의 CER·짝지은 구간, EP50/EP90, 2차 패스 계산 시간, 확정 때 바뀐 세그먼트 비율
   final-cpu P1 2차 패스의 CPU fp32 1스레드 계산 시간(dev_mix 앞 50발화 세션)
   summary   위 결과 파일을 모아 등록된 판정을 다시 계산해 summary.json·summary.md로 쓴다
+  continuous 규칙 변경 27 (C): 한글 전용 dev 발화를 매니페스트 순서로 −60 dBFS 잡음 간격으로 이어 발화
+            경계에서 약 2분씩 자른 연속 음성 스트림을 서버 기본 구성 세션 하나씩으로 흘려, 1-pass
+            (stream_text 이음)와 2-pass(확정 텍스트 이음)의 스트림 CER_ns, 스트림 단위 짝지은 구간, 규칙별
+            세그먼트 수, rule3 절단 비율, 세그먼트 길이 분포를 continuous.json에 쓴다(보고만, 서버 기본값은
+            바꾸지 않는다)
 
 사용법(등록한 순서: gate → timing → exit6 → session → final-cpu → summary; session은 gate 결과를 읽는다):
   uv run --no-sync python scripts/followup.py gate --checkpoint outputs/stage4/trimtail/avg10.pt
+  uv run --no-sync python scripts/followup.py continuous --gaps 0.5,1.0 --stream-minutes 2
 CPU 연기 시험: --device cpu --limit 3 --out-dir <임시 폴더> (코드 확인용이며 판정에 쓰지 않는다)
 """
 
@@ -38,6 +44,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 
 # numpy: 백분위. torch: 모델 실행·동기화·스레드 수.
@@ -82,6 +89,11 @@ RULE2_MAX_INCREASE = 0.002  # 6단계 rule2 조건: 끝점 끈 기준 대비 증
 FINAL_PASS_GPU_P90_MS = 250.0  # 2차 패스 계산 p90 상한(GPU fp16)
 FINAL_PASS_CPU_P90_MS = 500.0  # CPU fp32 1스레드(넘으면 CPU 장치에서는 기본 끔)
 REPRO_TOL = 0.0002  # rule2 1.2 s 캐시 유지 1-pass 재측정이 6단계 값과 0.02포인트 안이어야 측정 유효
+# 연속 음성 측정(규칙 변경 27 (C))의 등록 값: 발화 뒤 잡음 간격의 seed = CONTINUOUS_SEED + 세트 안 발화 인덱스
+# (6단계 세션 잡음 seed 0~, 드리프트 10,000~와 겹치지 않게), 인코더 프레임 길이(10 ms mel 4개 = 40 ms;
+# 세그먼트 길이를 초로 바꿀 때). 표현 임계는 P1과 같은 THRESHOLD(1.86포인트)를 쓴다.
+CONTINUOUS_SEED = 20_000
+ENCODER_FRAME_S = 0.04
 
 
 # --- 공통 도우미 ---------------------------------------------------------------------------------------
@@ -773,6 +785,207 @@ def cmd_final_cpu(args, model, vocab, device) -> None:
     write_json(path_out, result)
 
 
+# --- continuous: 연속 음성에서의 2차 패스(규칙 변경 27 (C)) -------------------------------------------------
+# P1(세션 측정)은 발화마다 새 세션을 열고 발화 뒤 잡음 3 s를 붙여, 세그먼트가 거의 발화 하나였다(700발화에
+# 텍스트 있는 세그먼트 728개). 실제 연속 입력에서는 발화 사이 휴지가 짧아 끝점이 발화 경계와 어긋나거나(조기
+# 끝점, rule3 20 s 절단) 세그먼트가 여러 발화를 담을 수 있고, 2차 패스는 그 세그먼트의 mel만 다시
+# 디코딩한다(이전 세그먼트 문맥 없음). 이 측정은 그 조건에서 1-pass와 2-pass 확정 자막을 같은 실행으로
+# 비교한다. 발화 단위 P1 수치와 정의가 달라(스트림 단위 CER, 이어 붙인 정답) 직접 비교하지 않는다.
+
+
+# 간격 인자("0.5,1.0")를 초 목록으로 바꾼다. 빈 항목·숫자가 아닌 값·0 이하는 측정 전에 SystemExit로 거부한다.
+def parse_gaps(text: str) -> list[float]:
+    items = [x.strip() for x in text.split(",")]
+    try:
+        gaps = [float(x) for x in items]
+    except ValueError:
+        raise SystemExit(f"gaps must be comma-separated seconds, got {text!r}") from None
+    if not gaps or any(g <= 0 for g in gaps):
+        raise SystemExit(f"gaps must be positive seconds, got {text!r}")
+    return gaps
+
+
+# 발화 목록(한글 전용, 매니페스트 순서)을 연속 음성 스트림들로 나눈다. 발화 순서는 그대로 두고 발화 경계에서만
+# 자른다: 발화와 그 뒤 간격(gap_s)의 길이(매니페스트 duration_s)를 더해 가다가 누적이 stream_s 이상이 되는
+# 발화에서 스트림을 닫는다. 그래서 마지막을 뺀 스트림은 stream_s 이상(한 발화만큼 넘을 수 있음)이고, 남은
+# 발화는 짧아도 마지막 스트림이 된다. 출력: 스트림마다 발화 인덱스 목록. 무작위가 없어 같은 입력이면 늘 같다.
+def continuous_streams(utts: list, gap_s: float, stream_s: float) -> list[list[int]]:
+    streams: list[list[int]] = []
+    current: list[int] = []
+    total = 0.0
+    for i, u in enumerate(utts):
+        current.append(i)
+        total += u.duration_s + gap_s
+        if total >= stream_s:
+            streams.append(current)
+            current, total = [], 0.0
+    if current:
+        streams.append(current)
+    return streams
+
+
+# 스트림 하나의 파형과 정답: 발화마다 [발화 PCM(float32, int16 ÷ 32768), 간격 잡음]을 이어 붙인다. 간격 잡음은
+# 6단계와 같은 −60 dBFS 가우시안(stage6.noise)이고 seed는 CONTINUOUS_SEED + 그 발화의 세트 안 인덱스라 같은
+# 스트림은 언제나 같은 파형이다(마지막 발화 뒤에도 간격을 붙인 뒤 flush한다). 정답은 발화 정답(정규화된
+# 매니페스트 text)을 공백 하나로 이은 것이다.
+def stream_audio(utts: list, indices: list[int], store: PcmStore, gap_s: float) -> tuple[torch.Tensor, str]:
+    pieces = []
+    for i in indices:
+        pieces += [store.waveform(utts[i].id), noise(gap_s, seed=CONTINUOUS_SEED + i)]
+    return torch.cat(pieces), " ".join(utts[i].text for i in indices)
+
+
+# 스트림마다 새 StreamSession(서버 연결 하나와 같음)으로 패킷을 흘리고 flush해, 같은 실행에서 1-pass·2-pass
+# 가설을 모두 얻는다. 정의는 run_sessions_two_pass와 같다: 1-pass = 비지 않은 stream_text를 공백으로 이음,
+# 2-pass = final 텍스트를 공백으로 이음. 세그먼트 기록: 닫힘 이벤트마다 규칙, 텍스트가 있는 세그먼트
+# (stream_text나 확정 텍스트가 비지 않음) 수와 그 길이(인코더 프레임 × 40 ms), rule3으로 잘린 텍스트 세그먼트
+# 수. 가설 행에는 짝지은 비교(scripts/compare_runs.py)가 읽는 id·ref·hyp·hangul_only와 스트림을 이룬 발화 id
+# 목록(utts)을 둔다.
+def run_continuous(model, vocab, utts, store, streams, gap_s, set_name, session_args: dict, device) -> dict:
+    logmel = LogMel().to(device)
+    out: dict = {
+        "stream_rows": {},
+        "final_rows": {},
+        "rules": Counter(),
+        "segments": 0,
+        "text_segments": 0,
+        "rule3_text_segments": 0,
+        "segment_s": [],
+        "stream_s": [],
+    }
+    for j, indices in enumerate(streams):
+        wav, ref = stream_audio(utts, indices, store, gap_s)
+        session = StreamSession(model, vocab, logmel=logmel, **session_args)
+        closes = []
+        for _pos, piece in packets(wav.to(device)):
+            closes.extend(e for e in session.push_samples(piece) if e.kind != "partial")
+        closes.extend(session.flush())
+        sid = f"{set_name}/gap_{gap_s}/{j:03d}"
+        common = {"id": sid, "ref": ref, "hangul_only": True, "utts": [utts[i].id for i in indices]}
+        out["stream_rows"][sid] = {
+            **common,
+            "hyp": " ".join(e.stream_text for e in closes if (e.stream_text or "").strip()),
+        }
+        out["final_rows"][sid] = {**common, "hyp": " ".join(e.text for e in closes if e.kind == "final")}
+        out["stream_s"].append(wav.numel() / SR)
+        for e in closes:
+            out["rules"][e.rule] += 1
+            out["segments"] += 1
+            if (e.stream_text or "").strip() or e.text.strip():
+                out["text_segments"] += 1
+                out["rule3_text_segments"] += e.rule == "rule3"
+                out["segment_s"].append(e.frames * ENCODER_FRAME_S)
+    return out
+
+
+# 값들의 분포 요약(개수, 최소, p10·p50·p90, 최대). 값이 없으면 n 0과 None.
+def distribution(values) -> dict:
+    a = np.asarray(list(values), dtype=float)
+    if a.size == 0:
+        return {"n": 0, "min": None, "p10": None, "p50": None, "p90": None, "max": None}
+    p10, p50, p90 = (float(x) for x in np.percentile(a, [10, 50, 90]))
+    return {
+        "n": int(a.size),
+        "min": float(a.min()),
+        "p10": p10,
+        "p50": p50,
+        "p90": p90,
+        "max": float(a.max()),
+    }
+
+
+# 조건 하나(세트 × 간격)의 요약. 비교는 a = 2-pass, b = 1-pass로 짝지은 부트스트랩(스트림 단위, seed 0,
+# 1,000회, scripts/compare_runs.py)이고 diff = 2-pass − 1-pass(음수면 2차 패스가 낫다).
+# 표현 규칙(등록): diff ≤ −1.86포인트이고 구간 상한 < 0이면 "gain_kept"(연속 음성에서도 이득 유지),
+# diff > 0이고 구간 하한 > 0이면 "worse"(서버 기본값은 바꾸지 않고 사용자 결정으로 올린다), 그 밖은 "neither".
+# 세트·간격 조건마다 따로 적용한다.
+def summarize_continuous(run: dict, set_name: str, gap_s: float, n_utts: int) -> dict:
+    cmp = compare(run["final_rows"], run["stream_rows"], hangul_only=True)
+    diff, (low, high) = cmp["diff_a_minus_b"], cmp["diff_ci95"]
+    if diff <= -THRESHOLD and high < 0:
+        expression = "gain_kept"
+    elif diff > 0 and low > 0:
+        expression = "worse"
+    else:
+        expression = "neither"
+    return {
+        "set": set_name,
+        "gap_s": gap_s,
+        "utterances": n_utts,
+        "streams": len(run["stream_rows"]),
+        "audio_s": float(sum(run["stream_s"])),
+        "stream_s": distribution(run["stream_s"]),
+        "cer_ns_stream": cmp["rate_b"],
+        "cer_ns_final_pass": cmp["rate_a"],
+        "final_pass_vs_stream": cmp,
+        "expression": expression,
+        "segments": run["segments"],
+        "rules": dict(run["rules"]),
+        "text_segments": run["text_segments"],
+        "rule3_cut_rate": run["rule3_text_segments"] / max(1, run["text_segments"]),
+        "segment_s": distribution(run["segment_s"]),
+    }
+
+
+# 등록 조건: dev_mix 간격 {0.5, 1.0} s(--gaps), dev_H 0.5 s(--dev-h-gaps), 스트림 약 2분(--stream-minutes).
+# 세션 구성은 서버 명령행 기본값(service.server.build_parser의 기본값: 청크·좌측, rule2, 끝점 뒤 캐시 정책,
+# step 경로 auto를 이 장치로 푼 값)에 2차 패스 full을 더한 것이고, 결과의 config에 그대로 남긴다. 서버처럼
+# 측정 전에 한 번 예열한다(2차 패스 길이 묶음·graph 캡처의 1회성 비용은 CER과 무관하지만 서버와 같은 상태로
+# 돌게 한다). 정확도만 재는 측정이라 쉬는 상태를 기다리지 않고 부하 기록만 남긴다. --limit은 한글 전용으로
+# 거른 뒤 세트마다 앞 N발화(연기 시험용). 가설 파일은
+# <out-dir>/hyps/continuous-<세트>_gap_<초>-{stream,final_pass}.jsonl.
+def cmd_continuous(args, model, vocab, device) -> None:
+    from stt_scratch.service import server as service
+
+    gaps = {"dev_mix": parse_gaps(args.gaps), "dev_h": parse_gaps(args.dev_h_gaps)}
+    path_out = out_file(args, "continuous.json")
+    defaults = service.build_parser().parse_args([])
+    session_args = {
+        "spec": ChunkSpec(defaults.chunk, defaults.left),
+        "endpoint": EndpointConfig(rule2_s=defaults.rule2),
+        "reset_cache_on_endpoint": defaults.reset_cache,
+        "step_path": service.resolve_step_path(defaults.step_path, str(device)),
+        "final_pass": "full",
+    }
+    stream_s = args.stream_minutes * 60
+    result: dict = {
+        "provenance": provenance(args, device),
+        "config": {
+            "chunk": defaults.chunk,
+            "left": defaults.left,
+            **asdict(session_args["endpoint"]),
+            "reset_cache_on_endpoint": session_args["reset_cache_on_endpoint"],
+            "step_path": session_args["step_path"],
+            "final_pass": "full",
+            "stream_minutes": args.stream_minutes,
+            "gaps_s": gaps,
+            "gap_noise_dbfs": -60.0,
+            "gap_noise_seed": f"{CONTINUOUS_SEED} + utterance index in the hangul-only set",
+        },
+        "load_before": load_snapshot(),
+        "conditions": {},
+    }
+    result["warm_up_s"] = warm_up(StreamSession(model, vocab, logmel=LogMel().to(device), **session_args))
+    hyp_dir = ROOT / args.out_dir / "hyps"
+    for set_name in ("dev_mix", "dev_h"):
+        all_utts, store = manifest(set_name, 0)
+        utts = [u for u in all_utts if u.hangul_only]
+        utts = utts[: args.limit] if args.limit else utts
+        for gap in gaps[set_name]:
+            t0 = time.perf_counter()
+            streams = continuous_streams(utts, gap, stream_s)
+            run = run_continuous(model, vocab, utts, store, streams, gap, set_name, session_args, device)
+            summary = summarize_continuous(run, set_name, gap, len(utts))
+            summary["seconds"] = round(time.perf_counter() - t0, 1)
+            key = f"{set_name}_gap_{gap}"
+            write_hyps(hyp_dir / f"continuous-{key}-stream.jsonl", run["stream_rows"])
+            write_hyps(hyp_dir / f"continuous-{key}-final_pass.jsonl", run["final_rows"])
+            result["conditions"][key] = summary
+            print(key, json.dumps(summary, ensure_ascii=False), flush=True)
+    result["load_after"] = load_snapshot()
+    write_json(path_out, result)
+
+
 # --- summary --------------------------------------------------------------------------------------------
 
 
@@ -863,11 +1076,12 @@ def cmd_summary(args, model, vocab, device) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(
-        description="7단계 봉인 test 뒤의 dev 전용 후속 측정(docs/experiments.md 규칙 변경 26). "
-        "봉인 test 세트는 "
-        "열지 않는다."
+        description="7단계 봉인 test 뒤의 dev 전용 후속 측정(docs/experiments.md 규칙 변경 26, continuous는 "
+        "27). 봉인 test 세트는 열지 않는다."
     )
-    p.add_argument("command", choices=["gate", "timing", "exit6", "session", "final-cpu", "summary"])
+    p.add_argument(
+        "command", choices=["gate", "timing", "exit6", "session", "final-cpu", "summary", "continuous"]
+    )
     p.add_argument("--checkpoint", default="outputs/stage4/trimtail/avg10.pt", help="측정 모델(최종 모델)")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument(
@@ -885,6 +1099,22 @@ def main(argv: list[str] | None = None) -> None:
     )
     p.add_argument(
         "--wait-idle-min", type=float, default=10.0, help="지연 측정 전 쉬는 상태를 기다리는 최대 분"
+    )
+    p.add_argument(
+        "--gaps",
+        default="0.5,1.0",
+        help="continuous: dev_mix 스트림에서 발화 사이에 넣는 -60 dBFS 잡음 간격(초, 쉼표로 여러 개; 등록 "
+        "0.5,1.0)",
+    )
+    p.add_argument(
+        "--dev-h-gaps", default="0.5", help="continuous: dev_H 스트림의 발화 사이 잡음 간격(초, 등록 0.5)"
+    )
+    p.add_argument(
+        "--stream-minutes",
+        type=float,
+        default=2.0,
+        help="continuous: 스트림 길이 목표(분). 발화 경계에서 자르므로 스트림은 목표 이상이 되는 발화에서 "
+        "닫힌다(마지막 스트림은 남은 발화만큼 짧을 수 있음)",
     )
     args = p.parse_args(argv)
     # Windows 콘솔·파이프의 기본 인코딩(cp949)으로 한국어 요약을 찍으면 로그가 깨지므로 표준 출력을 UTF-8로
@@ -904,6 +1134,7 @@ def main(argv: list[str] | None = None) -> None:
         "exit6": cmd_exit6,
         "session": cmd_session,
         "final-cpu": cmd_final_cpu,
+        "continuous": cmd_continuous,
     }
     commands[args.command](args, model, vocab, device)
 

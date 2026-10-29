@@ -8,7 +8,9 @@
            캐시 초기화한 rule2 {0.8, 1.2} s, 그다음 고른 rule2에서 캐시 유지. 조기 끝점에 따른 CER
            증가, EP50/EP90(끝점 시각 − MFA 마지막 단어 끝), 부분 자막 안정성 UPWR/UPSR(H6.3),
            세션 CER과 측정 CER 비교
-  drift    dev_H 음성을 이어 붙인 10분을 세션 하나로 흘려 분당 계산 시간과 GPU 메모리 변화를 잰다
+  drift    dev_H 음성을 이어 붙인 10분을 세션 하나로 흘려 분당 계산 시간과 GPU 메모리 변화를 잰다.
+           --step-path·--final-pass·--warm-up을 주면 서버 기본 구성(graph step, 2차 패스, 예열)으로도
+           잰다(규칙 변경 27)
 
 사용법: uv run python scripts/stage6.py grid --checkpoint outputs/stage4/control/avg10.pt
 """
@@ -28,21 +30,22 @@ import argparse
 import json
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 # numpy: 백분위·지연 통계. torch: 모델 실행, GPU 동기화·메모리 통계, CPU 스레드 수 제한.
 import numpy as np
 import torch
 
-# 프로젝트 내부 모듈: 평가 경로(offline·실제 캐시 스트리밍 디코딩, 채점, autocast), 캐시 스트리밍 인코더,
-# 서비스와 같은 세션·끝점 설정, 첫 패킷 보정 표본 수.
+# 프로젝트 내부 모듈: 평가 경로(offline·실제 캐시 스트리밍 디코딩, 채점, autocast), 캐시 스트리밍 인코더와 그
+# CUDA Graph 캡처 상태, 서비스와 같은 세션·예열·끝점 설정, 첫 패킷 보정 표본 수.
 from stt_scratch.data import PcmStore, read_manifest
 from stt_scratch.evaluate import autocast, check_vocab, decode_offline, decode_streaming, load_model, score
 from stt_scratch.model.features import FIRST_PACKET_EXTRA, LogMel
 from stt_scratch.model.mask import ChunkSpec
-from stt_scratch.model.streaming import StreamingEncoder
+from stt_scratch.model.streaming import StreamingEncoder, graph_status
 from stt_scratch.service.endpoint import EndpointConfig
-from stt_scratch.service.session import StreamSession
+from stt_scratch.service.session import StreamSession, warm_up
 from stt_scratch.text import Vocab
 
 # SR: 표본화율. PACKET: 320 ms 패킷 표본 수(5,120). NOISE_DBFS: 세션 측정에서 발화 뒤에 붙이는 가우시안 잡음
@@ -362,6 +365,16 @@ def cmd_session(args, model, vocab, device) -> dict:
 # docs/survey/README.md §6의 드리프트 항목).
 # 실시간 속도가 아니라 가능한 한 빠르게 처리한 결과다(규칙 변경 24의 표기). 0.5 s 간격에서는 rule2가 닫지 않아
 # 세그먼트 대부분이 20 s 상한(rule3)으로 닫혔다.
+# 서버 기본값이 바뀐 뒤(규칙 변경 26: graph step, 끝점 뒤 2차 패스, rule2 0.8 s, 캐시 유지)의 드리프트를
+# 재려고 세션 옵션을 인자로 연다(규칙 변경 27 (B)): --step-path·--final-pass를 세션에 그대로 넘기고,
+# --warm-up이면 서버 시작과 같은 예열(session.warm_up: 부분 청크 길이·2차 패스 길이 묶음·graph면 CUDA Graph
+# 캡처)을 다른 세션으로 먼저 한 번 돌린 뒤 측정 세션을 만든다. 왜 예열인가: 하지 않으면 새 텐서 모양의 1회성
+# 비용(GPU에서 새 2차 패스 길이를 처음 계산할 때 약 0.47 s, 그래프 캡처)이 측정 첫 분과 2차 패스 시간에 섞여
+# 서버가 실제로 겪지 않는 값이 된다. 피크 메모리는 예열 뒤부터 잰다(측정 스트림 동안의 피크).
+# 2차 패스를 켜면 닫힌 세그먼트마다의 2차 패스 계산 시간 p50/p90/max를 보고하고, graph 경로면 CUDA Graph 캡처
+# 상태(model/streaming.graph_status)를 남긴다. 닫힌 세그먼트는 규칙별로도 센다(closes_by_rule: final·endpoint
+# 모두; segments_closed는 6단계와 같이 final만). 기본값(eager, 2차 패스 없음, 예열 없음)은 6단계 측정과 같은
+# 동작이다.
 def cmd_drift(args, model, vocab, device) -> dict:
     spec = ChunkSpec(args.chunk, args.left)
     utts = read_manifest(ROOT / "manifests/dev_h.jsonl")
@@ -374,16 +387,39 @@ def cmd_drift(args, model, vocab, device) -> dict:
             break
     wav = torch.cat(pieces).to(device)
     endpoint = EndpointConfig(rule2_s=args.rule2)
-    session = StreamSession(model, vocab, spec, LogMel().to(device), endpoint, args.policy == "reset")
+    logmel = LogMel().to(device)
+
+    def new_session() -> StreamSession:
+        return StreamSession(
+            model,
+            vocab,
+            spec,
+            logmel,
+            endpoint,
+            args.policy == "reset",
+            step_path=args.step_path,
+            final_pass=args.final_pass,
+        )
+
+    warm_s = warm_up(new_session()) if args.warm_up else None
+    session = new_session()
     per_minute, mem = {}, []
     finals = 0
+    rules: Counter = Counter()
+    pass_ms: list[float] = []
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
     # 패킷마다 이번에 새로 생긴 청크 계산 시간만 그 패킷의 분(minute)에 모으고, 30초 경계를 지나는 패킷에서
-    # 메모리를 기록한다.
+    # 메모리를 기록한다. 닫힘 이벤트(final·endpoint)마다 규칙과(2차 패스를 켰으면) 2차 패스 시간을 모은다.
     for pos, piece in packets(wav):
         n_before = len(session.stats.compute_ms)
-        finals += sum(ev.kind == "final" for ev in session.push_samples(piece))
+        for ev in session.push_samples(piece):
+            if ev.kind == "partial":
+                continue
+            finals += ev.kind == "final"
+            rules[ev.rule] += 1
+            if args.final_pass == "full":
+                pass_ms.append(ev.final_pass_ms)
         minute = int(pos / SR // 60)
         per_minute.setdefault(minute, []).extend(session.stats.compute_ms[n_before:])
         if device.type == "cuda" and pos % (30 * SR) < PACKET:
@@ -393,6 +429,15 @@ def cmd_drift(args, model, vocab, device) -> dict:
         for m, v in sorted(per_minute.items())
         if v
     }
+    final_pass_ms = None
+    if args.final_pass == "full":
+        final_pass_ms = {"n": len(pass_ms), "p50": None, "p90": None, "max": None}
+        if pass_ms:
+            final_pass_ms.update(
+                p50=float(np.percentile(pass_ms, 50)),
+                p90=float(np.percentile(pass_ms, 90)),
+                max=float(max(pass_ms)),
+            )
     return {
         "audio_s": wav.numel() / SR,
         "segments_closed": finals,
@@ -401,17 +446,23 @@ def cmd_drift(args, model, vocab, device) -> dict:
         "peak_allocated_mb": torch.cuda.max_memory_allocated() / 2**20 if device.type == "cuda" else None,
         "policy": args.policy,
         "rule2_s": args.rule2,
+        "step_path": args.step_path,
+        "final_pass": args.final_pass,
+        "warm_up_s": None if warm_s is None else round(warm_s, 2),
+        "closes_by_rule": dict(rules),
+        "final_pass_ms": final_pass_ms,
+        "graph": graph_status(model, spec) if args.step_path == "graph" else None,
     }
 
 
-# 하위 명령을 실행하고 결과에 체크포인트 경로·SHA-256·장치·구성·limit·소요 시간을 붙여 저장한다. 같은
-# 체크포인트·구성·전수일 때만 결과를 다시 쓰거나 7단계 사전 검사에서 통과로 보게 하려는 출처 기록이다(규칙
-# 변경 24·25).
 # 인자: command, --checkpoint, --name(결과 파일 이름, 기본 명령 이름), --chunk·--left(서비스 구성, 8·128),
 # --timing-utts·--cpu-utts(grid 계산 시간 발화 수), --limit(앞 N발화만; 0 = 전수), --tail-s(세션 잡음 길이),
-# --minutes·--rule2·--policy(drift 설정), --device.
-def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser()
+# --minutes·--rule2·--policy·--step-path·--final-pass·--warm-up(drift 설정), --device. 테스트가 기본값을 볼 수
+# 있게 파서를 따로 만든다(drift의 새 인자 기본값 = 6단계 측정 동작).
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="6단계 스트리밍 서비스 측정 도구(docs/experiments.md 6단계·규칙 변경 27)"
+    )
     p.add_argument("command", choices=["grid", "h61", "session", "drift"])
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--name", default="")
@@ -424,8 +475,35 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--minutes", type=float, default=10.0)
     p.add_argument("--rule2", type=float, default=1.2)
     p.add_argument("--policy", default="reset", choices=["reset", "keep"])
+    p.add_argument(
+        "--step-path",
+        choices=["eager", "fast", "graph"],
+        default="eager",
+        help="drift: 세션의 인코더 step 경로(기본 eager = 6단계 측정 경로; 서버 GPU 기본값은 graph)",
+    )
+    p.add_argument(
+        "--final-pass",
+        choices=["none", "full"],
+        default="none",
+        help="drift: full이면 끝점마다 세그먼트를 전체 문맥으로 다시 디코딩하고(서버 기본값) 그 계산 시간을 "
+        "보고한다(기본 none = 6단계 측정의 1-pass)",
+    )
+    p.add_argument(
+        "--warm-up",
+        action="store_true",
+        help="drift: 측정 전에 서버 시작과 같은 예열(부분 청크 길이·2차 패스 길이 묶음·graph면 CUDA Graph "
+        "캡처)을 다른 세션으로 한 번 돌린다. 1회성 비용이 측정에 섞이지 않게 한다(기본: 하지 않음 = 6단계 "
+        "동작)",
+    )
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    args = p.parse_args(argv)
+    return p
+
+
+# 하위 명령을 실행하고 결과에 체크포인트 경로·SHA-256·장치·구성·limit·소요 시간을 붙여 저장한다. 같은
+# 체크포인트·구성·전수일 때만 결과를 다시 쓰거나 7단계 사전 검사에서 통과로 보게 하려는 출처 기록이다(규칙
+# 변경 24·25). 결과 파일이 이미 있어도 덮어쓰므로 등록 결과와 다른 측정은 --name으로 이름을 바꾼다.
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     device = torch.device(args.device)
     model, _ = load_model(ROOT / args.checkpoint, device)
     vocab = Vocab.load(ROOT / "manifests" / "vocab.json")
