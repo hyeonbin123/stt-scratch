@@ -24,6 +24,8 @@
 
 **WebSocket 추가 방어(2026-10-24, 보안 검토 반영)**: 위 Origin 검사는 Origin을 요청 Host와만 비교하므로, 공격자가 자기 도메인의 DNS를 127.0.0.1로 다시 가리키면(DNS 리바인딩) 브라우저가 Host와 Origin에 둘 다 그 도메인을 실어 보내 검사를 통과했다(TestClient로 재현: Host·Origin이 모두 외부 도메인인 연결이 수락되어 flush에 stats를 돌려줬고, Host만 외부인 `GET /info`도 200이었다). 그래서 Host 헤더 허용 목록(Starlette `TrustedHostMiddleware`; 기본 `127.0.0.1`·`localhost`·`[::1]`, `--host` 값, `--allowed-host`로 더한 값)을 두어 목록 밖의 Host로 온 HTTP 요청과 WebSocket 핸드셰이크를 모두 400으로 거부한다(거부 응답에도 보안 헤더가 붙는다). 입력·자원 상한도 더했다. 홀수 바이트 바이너리 프레임(int16 표본으로 나뉘지 않음)은 오류 JSON 한 줄 뒤 close 1007로 끝난다(전에는 처리기 밖으로 나간 예외가 트레이스백을 남기고 1011로 끊었다). 메시지 상한은 1 MiB(16 kHz int16 약 32.8 s)로, uvicorn `ws_max_size`가 전송 계층에서 1009로 닫고 처리기도 같은 상한을 검사한다(uvicorn 기본 16 MiB면 한 프레임에 약 524 s 오디오가 들어와 인코더 계산이 그동안 다른 연결의 자막을 멈춘다). 동시 세션은 8개까지이고(넘으면 오류 JSON 뒤 close 1013), uvicorn `limit_concurrency`는 16이다(넘으면 새 HTTP 요청에 503; WebSocket 업그레이드는 이 값으로 막히지 않아 세션 수는 앱에서 센다). `--host`가 루프백이 아니면 인증 없는 서버를 외부에 연다는 경고를, `--allowed-host '*'`면 Host 검사가 꺼진다는 경고를 시작 로그에 남긴다. 인코더 계산을 별도 스레드로 옮기는 것은 서빙 경로 변경(지연 재측정 필요)이라 하지 않았다. 확인은 `tests/test_service.py`(TestClient)와 실제 uvicorn 서버로 했다.
 
+**WebSocket 거부 응답의 헤더(2026-10-29 추가 확인)**: 위 문단의 '거부 응답에도 보안 헤더가 붙는다'는 HTTP 요청의 400 거부에만 맞다. 보안 헤더를 붙이는 미들웨어(`@app.middleware("http")`)는 HTTP 요청만 거치므로, 목록 밖 Host로 온 WebSocket 핸드셰이크의 400 거부 응답(`websocket.http.response.*`)에는 보안 헤더가 없다(TestClient로 확인: 같은 외부 Host의 `GET /info` 400에는 `X-Content-Type-Options`·`X-Frame-Options`·CSP가 붙고, 핸드셰이크 400에는 붙지 않는다). 이 응답은 연결 업그레이드가 거부됐다는 뜻이라 브라우저가 페이지로 렌더링하지 않으므로(그 헤더들이 막는 MIME 추측·프레임 삽입 같은 위험이 생기지 않는다) 그대로 둔다.
+
 **bandit**: Medium 1건(B310, `scripts/stream_client.py`가 `--url`에서 만든 주소를 `urlopen`에 넘김)을 http·https 스킴만 허용하도록 고쳤다. 남은 Low 21건은 연구 코드의 `assert`(B101), 데이터 섞기용 `random`(B311, 보안 용도 아님), 고정 인자 목록의 `subprocess`(B404·B603·B607: 학습 하위 프로세스와 `git rev-parse`)라 그대로 둔다.
 
 **pip-audit**: 알려진 취약점 2건, 둘 다 이 프로젝트의 사용 방식에는 해당하지 않는다.
@@ -50,6 +52,7 @@
 - **pip-audit 2.10.1**: `uv export --frozen`의 73개 패키지(10-18과 같은 목록이고 certifi·filelock 버전만 다름). torch·torchaudio는 같은 번호의 PyPI 버전으로 따로 점검했다. 갱신 전에는 3패키지에서 알려진 취약점이 나왔다: certifi 2026.7.22의 PYSEC-2026-4320(GHSA-6q48-6c7w-9gw2, 번들 CA 저장소의 한 루트 아래 중간 CA 개인 키가 유출돼 경로상 공격자가 임의 호스트 인증서를 만들 수 있음, 2026.10.19에서 수정), filelock 4.1.0의 17건(모두 4.2.1에서 수정), setuptools 81.0.0의 2건. 서비스는 외부로 TLS 연결을 하지 않고 데이터 내려받기도 끝나 실제 위험은 낮지만, 공개 잠금 파일과 CI가 알려진 취약 버전을 설치하지 않도록 잠금 파일에서 certifi를 2026.10.23, filelock을 4.2.4로 올렸다(`uv lock --upgrade-package`로 그 패키지만; 다른 패키지 줄은 그대로). 갱신 뒤 남은 것은 두 패키지이고(플랫폼 표지 때문에 Windows에서 건너뛰는 리눅스 전용 CUDA 휠까지 보려고 표지를 지운 목록으로 다시 점검해도 같음) 이 프로젝트의 사용 방식에는 해당하지 않는다
   - setuptools 81.0.0: 10-14의 PYSEC-2026-3447(CVE-2026-59890, 위 설명)과 새 GHSA-xmj3-9gf7-h52w(84.1.0에서 수정: Windows에서 wheel의 `namespace_packages.txt` 값 때문에 setuptools의 옛 wheel 설치 경로 `Wheel.install_as_egg`가 지정한 폴더 밖에 `__init__.py`를 만듦). 이 프로젝트는 패키지를 uv로 설치하고 hatchling으로 빌드해 그 경로를 쓰지 않는다. torch 2.11.0+cu128이 `setuptools<82`를 요구해 torch를 바꾸지 않고는 올릴 수 없다(`uv lock --upgrade-package setuptools`가 81.0.0에 머문다)
   - torch 2.11.0(PyPI 버전으로 점검): 10-14와 같은 PYSEC-2025-194(CVE-2025-3000, 코드에서 쓰지 않는 `torch.jit.script`). 측정 환경이라 올리지 않는다
+  - 2026-10-29 추가 확인: CI도 잠금 파일대로 setuptools 81.0.0을 설치한다(설치 단계가 잠금 내보내기를 그대로 쓴다). CI(리눅스)는 린트·테스트만 하고 sdist를 만들지 않으며 패키지는 uv로 설치하므로, 두 권고의 경로(macOS에서 sdist 만들기, Windows에서 setuptools의 옛 wheel 설치 경로)를 지나지 않는다
 - **gitleaks 8.30.1**: 커밋 81개, 약 36.8 MB에서 비밀 정보 0건
 - **CI·데이터 출처 고정**: `.github/workflows/ci.yml`은 최상위 `permissions: contents: read`로 GITHUB_TOKEN을 읽기 전용으로 두고, 두 액션(`actions/checkout` v7.0.1, `astral-sh/setup-uv` v10.2.0)을 태그 대신 그 릴리스의 커밋 SHA로 고정한다(태그를 옮겨도 다른 코드가 실행되지 않음). 설치 단계의 해시 검증(`--require-hashes`)은 CPU torch 휠을 잠금 파일과 따로 받는 구조라 넣지 않았다(비밀값·배포 권한이 없는 테스트 전용 워크플로). `scripts/download_data.py`는 이제 조회한 커밋 sha 그대로 내려받는다(전에는 sha를 기록만 하고 움직이는 브랜치 이름으로 받았다). 10-29 메타데이터 조회(데이터는 다시 받지 않음)로 `reports/data/download-manifest-2026-10-11.json`에 기록된 네 출처의 커밋이 모두 sha로 열리고 기록과 같은 파일·크기를 가리키며 그 뒤 출처 브랜치가 움직이지 않았음을 확인했다
 
@@ -67,3 +70,9 @@ docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:latest git /repo
 ```
 
 Windows Git Bash에서는 Docker 볼륨 경로가 바뀌지 않도록 `MSYS_NO_PATHCONV=1`을 앞에 붙이고 `$PWD` 대신 `D:/...` 형식 경로를 쓴다.
+
+2026-10-29 추가: 위 `uv export` 목록으로 하는 pip-audit 점검에서 torch·torchaudio는 CUDA 빌드 표기(`2.11.0+cu128`)라 PyPI에서 찾지 못해 'Dependency not found on PyPI'로 건너뛰고, 건너뛴 패키지는 찾은 취약점 수에 들어가지 않는다. 그래서 같은 번호의 PyPI 버전을 따로 점검한다(10-29 결과는 위 재점검 절의 torch 2.11.0 PYSEC-2025-194):
+
+```bash
+grep -E '^(torch|torchaudio)==' work/security/requirements.txt | sed -E 's/\+cu[0-9]+//; s/ *;.*//' > work/security/torch-pypi.txt && uvx pip-audit -r work/security/torch-pypi.txt --no-deps --disable-pip
+```
