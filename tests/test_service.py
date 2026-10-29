@@ -5,7 +5,7 @@
 검사, Host 허용 목록(DNS 리바인딩 방어), WebSocket 입력·자원 상한(홀수 바이트 프레임, 큰 프레임, 동시 세션
 수), 명령행 실행이 uvicorn에 넘기는 전송 상한과 경고, CSP 해시, 서버 예열, 서버 상태 보고(/info의 어휘
 SHA-256·torch 스레드 수·CUDA Graph 캡처 상태, 캡처 실패 시 fast 폴백), 어휘 크기 검사, CPU 장치의 기본
-1스레드.
+1스레드, 2차 패스를 켰을 때만 확정 이벤트에 붙는 stream_text.
 """
 
 # [방식] 작은 모델(d=32, 2층)과 8토큰 어휘로 CPU에서 돌린다. 서버는 실제 포트에 띄우지 않고 FastAPI
@@ -457,6 +457,38 @@ def test_info_reports_vocab_hash_threads_and_graph_status(tmp_path) -> None:
     streaming._static_stepper(enc).graph_failed = "simulated"
     assert streaming.graph_status(model, spec) == {"captured": False, "failed": "simulated"}
     assert streaming.graph_status(model, ChunkSpec(4, 32)) == {"captured": False, "failed": None}
+
+
+# 확인: 2차 패스를 켠 서버(final_pass full)가 세그먼트를 닫는 이벤트(final·endpoint)에는 stream_text(2차
+# 패스가 바꾸기 전의 320 ms 스트리밍 텍스트)가 붙고 부분 자막(partial)에는 없으며, 2차 패스를 끈 서버(none)의
+# 이벤트에는 그 키가 아예 없다. 같은 PCM에서 full 서버의 stream_text 이음(빈 값 제외, 공백으로 이음)은 none
+# 서버의 확정 텍스트 이음과 같다(2차 패스는 스트리밍 상태를 바꾸지 않는다: tests/test_final_pass.py). 왜: 서버
+# 기본값(full)에서는 확정 텍스트가 2차 패스 결과라 측정 클라이언트(scripts/stream_client.py)가 확정 텍스트로는
+# 서비스 경로의 스트리밍 텍스트를 확인할 수 없었다. 이 필드로 6단계와 같은 'simulated 가설과 같은 텍스트'
+# 검증을 기본값 서버에서도 한다(docs/experiments.md 규칙 변경 27).
+def test_close_events_carry_stream_text_only_with_the_final_pass(tmp_path) -> None:
+    hosts = ["testserver"]
+    full = TestClient(
+        make_app(tmp_path, warm=False, step_path="fast", final_pass="full", allowed_hosts=hosts)
+    )
+    none = TestClient(make_app(tmp_path, warm=False, step_path="fast", allowed_hosts=hosts))
+    g = torch.Generator().manual_seed(4)
+    pcm = (torch.randn(3 * 16000, generator=g) * 2000).to(torch.int16).numpy().tobytes()
+
+    def stream(client: TestClient) -> list[dict]:
+        with client.websocket_connect("/ws") as ws:
+            for i in range(0, len(pcm), 10240):
+                ws.send_bytes(pcm[i : i + 10240])
+            ws.send_text("flush")
+            return read_until_stats(ws)
+
+    got_full, got_none = stream(full), stream(none)
+    closes = [m for m in got_full if m["type"] in ("final", "endpoint")]
+    assert closes and all(isinstance(m.get("stream_text"), str) for m in closes)
+    assert all("stream_text" not in m for m in got_full if m["type"] == "partial")
+    assert all("stream_text" not in m for m in got_none)
+    streamed = " ".join(m["stream_text"] for m in closes if m["stream_text"].strip())
+    assert streamed and streamed == " ".join(m["text"] for m in got_none if m["type"] == "final")
 
 
 # 확인: 어휘 파일의 토큰 수가 체크포인트의 출력 크기(ModelConfig.vocab_size)와 다르면 evaluate.check_vocab과

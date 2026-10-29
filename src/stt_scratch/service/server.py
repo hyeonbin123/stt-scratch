@@ -18,6 +18,12 @@
   {"type": "final",   "segment": n, "text": "...", "rule": "rule2"}   끝점 규칙으로 닫힌 세그먼트
   {"type": "endpoint", "segment": n, "text": "", "rule": "rule1"}     빈 세그먼트를 닫은 끝점
   {"type": "error", "code": 1007, "reason": "..."}      잘못된 입력·상한 초과(이 한 줄 뒤 같은 코드로 닫음)
+이벤트(partial·final·endpoint)에는 "frames"(그 세그먼트에서 처리한 인코더 프레임 수), "compute_ms"(그 청크의
+인코더 계산 ms), "final_pass_ms"(2차 패스 계산 ms, 끄면 0)도 있다. 2차 패스(--final-pass full, 명령행
+기본값)를 켜면 final의 text는 2차 패스 결과이고, final·endpoint에 "stream_text"(같은 세그먼트의 320 ms
+스트리밍 텍스트 = 부분 자막이 쌓인 값, 2차 패스가 바꾸기 전)가 더 붙는다. 2차 패스 결과가 비면 endpoint로
+닫히지만 그 stream_text는 비어 있지 않을 수 있다. 2차 패스를 끄면 stream_text 키가 없다(확정 텍스트가 곧
+스트리밍 텍스트).
 텍스트 프레임 "flush"는 스트림을 마무리하고(마지막 부분 청크 + final), 이벤트들 뒤에 다음으로 답한다.
   {"type": "stats", "chunks": n, "compute_ms_p50": ..., "compute_ms_p90": ..., "compute_ms_max": ...}
 (세션 전체의 청크당 계산 시간). "reset"은 새 세션을 시작한다.
@@ -81,7 +87,7 @@ from stt_scratch.model import streaming
 from stt_scratch.model.features import LogMel
 from stt_scratch.model.mask import ChunkSpec
 from stt_scratch.service.endpoint import EndpointConfig
-from stt_scratch.service.session import StreamSession, warm_up
+from stt_scratch.service.session import Event, StreamSession, warm_up
 from stt_scratch.text import Vocab
 
 # ROOT: 저장소 루트(src/stt_scratch/service/server.py에서 세 단계 위). 체크포인트·어휘·페이지 경로의 기준이다.
@@ -246,6 +252,29 @@ async def refuse(socket: WebSocket, code: int, reason: str) -> None:
     log.warning("websocket from %s closed with %d: %s", socket.client, code, reason)
     await socket.send_text(json.dumps({"type": "error", "code": code, "reason": reason}))
     await socket.close(code=code, reason=reason)
+
+
+# 세션 이벤트 하나를 WebSocket으로 보낼 JSON 객체로 바꾼다(프로토콜은 이 파일 머리말). 키: 종류, 세그먼트
+# 번호, 텍스트, 끝점 규칙, 세그먼트 프레임 수, 그 청크의 계산 ms, 2차 패스 계산 ms(끄면 0; 소수 첫째 자리로
+# 반올림). stream_text는 세션이 값을 채운 이벤트(2차 패스를 켠 세션의 final·endpoint)에만 넣는다. 왜: 2차
+# 패스를 켜면 확정 텍스트가 2차 패스 결과라, 측정 클라이언트가 서비스 경로의 320 ms 스트리밍 텍스트를
+# simulated 가설과 비교하려면 그 텍스트가 따로 필요했다(docs/experiments.md 규칙 변경 27). 키를 더하기만
+# 하므로 기존 클라이언트(웹 페이지 포함)는 그대로 동작한다. 측정 클라이언트의 오프라인
+# 재생(scripts/stream_client.py --replay-check)도 이 함수로 직렬화해 서버와 같은 모양의 기록을 만든다.
+def event_message(ev: Event) -> dict:
+    """Event를 서버가 보내는 JSON 객체(dict)로 바꾼다. stream_text는 값이 있을 때만 넣는다."""
+    message = {
+        "type": ev.kind,
+        "segment": ev.segment,
+        "text": ev.text,
+        "rule": ev.rule,
+        "frames": ev.frames,
+        "compute_ms": round(ev.compute_ms, 1),
+        "final_pass_ms": round(ev.final_pass_ms, 1),
+    }
+    if ev.stream_text is not None:
+        message["stream_text"] = ev.stream_text
+    return message
 
 
 # 저장소 기준 상대 경로를 주고, 저장소 밖이면 파일 이름만 준다(ZAP 점검 뒤 수정).
@@ -440,24 +469,11 @@ def build_app(
                     events = []
                 else:
                     events = []
-                # 이벤트마다 JSON 텍스트 프레임 하나: 종류, 세그먼트 번호, 텍스트, 규칙, 세그먼트 프레임 수,
-                # 계산 시간(ms). ensure_ascii=False로 한글을 그대로 보낸다.
+                # 이벤트마다 JSON 텍스트 프레임 하나(event_message: 종류, 세그먼트 번호, 텍스트, 규칙,
+                # 세그먼트 프레임 수, 계산 시간, 2차 패스 시간, 2차 패스를 켰으면 닫힘 이벤트의 stream_text).
+                # ensure_ascii=False로 한글을 그대로 보낸다.
                 for ev in events:
-                    await socket.send_text(
-                        json.dumps(
-                            {
-                                "type": ev.kind,
-                                "segment": ev.segment,
-                                "text": ev.text,
-                                "rule": ev.rule,
-                                "frames": ev.frames,
-                                "compute_ms": round(ev.compute_ms, 1),
-                                # 2차 패스를 켰을 때 확정 자막 계산에 더 든 시간(끄면 0)
-                                "final_pass_ms": round(ev.final_pass_ms, 1),
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
+                    await socket.send_text(json.dumps(event_message(ev), ensure_ascii=False))
                 if stats is not None:
                     await socket.send_text(json.dumps({"type": "stats", **stats}))
         except WebSocketDisconnect:
