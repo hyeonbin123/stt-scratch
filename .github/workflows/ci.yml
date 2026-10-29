@@ -7,15 +7,26 @@ on:
   push:
   pull_request:
 
+# GITHUB_TOKEN 권한을 저장소 기본값에 맡기지 않고 최소로 둔다. 이 워크플로는 코드를 받아(checkout) 린트·테스트만
+# 하므로 읽기 권한 하나면 되고, 쓰기 권한이 없으면 설치 단계에서 받은 패키지가 잘못된 코드를 실행하더라도 토큰으로
+# 저장소를 바꿀 수 없다.
+permissions:
+  contents: read
+
 jobs:
   test:
     # ubuntu-latest는 2026-10-19부터 Ubuntu 26으로 바뀌므로 러너 이미지를 고정한다(같은 계정의 다른 저장소와 같은 선택).
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      # setup-uv는 v8부터 움직이는 major 태그를 내지 않으므로 정확한 릴리스로 고정한다. v6부터 python-version만으로는
-      # 가상환경이 켜지지 않아, 아래 uv pip install이 쓸 .venv를 activate-environment로 만든다(uv run도 같은 .venv를 쓴다).
-      - uses: astral-sh/setup-uv@v10.2.0
+      # 액션은 태그가 아니라 그 릴리스의 커밋 SHA로 고정한다. 태그는 나중에 다른 커밋으로 옮길 수 있어 같은 워크플로가
+      # 다른 코드를 실행할 수 있지만 커밋 SHA는 바뀌지 않는다. 줄 끝 주석이 그 SHA의 릴리스다. 올릴 때는
+      # `gh api repos/<소유자>/<저장소>/git/ref/tags/<태그>`로 새 릴리스의 커밋을 조회해 SHA와 주석을 함께 바꾼다
+      # (결과의 object.type이 tag면 주석 달린 태그라서, `.../git/tags/<그 sha>`의 object.sha가 커밋이다).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # setup-uv는 v8부터 움직이는 major 태그를 내지 않으므로 정확한 릴리스(v10.2.0)의 커밋으로 고정한다. v6부터
+      # python-version만으로는 가상환경이 켜지지 않아, 아래 uv pip install이 쓸 .venv를 activate-environment로
+      # 만든다(uv run도 같은 .venv를 쓴다).
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.11"
           activate-environment: true
