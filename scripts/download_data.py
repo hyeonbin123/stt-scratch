@@ -9,15 +9,21 @@
 0단계 데이터 준비의 첫 명령이다(README).
 
 사용법: uv run python scripts/download_data.py [--dest data/raw]
-받은 모든 저장소의 정확한 revision(커밋 sha)과 파일 목록·크기를 <dest>/manifest.json에 쓴다.
+저장소마다 revision 이름(main 또는 refs/convert/parquet)이 지금 가리키는 커밋 sha를 먼저 조회하고, 그 커밋
+그대로 내려받는다. 받은 모든 저장소의 revision 이름·실제로 받은 커밋 sha·파일 목록·크기를
+<dest>/manifest.json에 쓴다.
 """
 
 # [왜 필요한가] 데이터 원칙은 "계정이나 약관 동의 없이 받을 수 있는 공개 한국어 음성만
 # 쓴다"이다(docs/data.md). 그래서 받기 전에 저장소가 게이트(접근 승인·약관 동의 필요)인지 확인하고, 게이트면
 # 받지 않고 멈춘다. 커밋 sha를 남기는 이유는 나중에 같은 데이터를 다시 받거나 결과를 재현할 때 버전을 특정하기
 # 위해서다(기록본: reports/data/download-manifest-2026-10-11.json).
-# [흐름] 출처 목록(SOURCES)을 돌며 → 게이트 확인 → 허용 패턴에 맞는 파일만 snapshot_download → 받은 파일
-# 목록과 크기를 manifest에 추가 → 마지막에 manifest.json 저장.
+# [흐름] 출처 목록(SOURCES)을 돌며 → 게이트 확인과 커밋 sha 조회 → 그 커밋에서 허용 패턴에 맞는 파일만
+# snapshot_download → 받은 파일 목록과 크기를 manifest에 추가 → 마지막에 manifest.json 저장.
+# [커밋 고정] 내려받기를 움직이는 이름(main, refs/convert/parquet)으로 하면 조회와 내려받기 사이에 저장소가
+# 바뀌었을 때 기록한 sha와 다른 파일이 들어와도 알 수 없다(Common Voice 두 출처는 제3자 미러라 내용이 바뀔 수
+# 있다). 그래서 조회한 커밋 sha를 snapshot_download의 revision으로 그대로 넘겨, manifest의 commit_sha가 곧
+# 실제로 받은 커밋이 되게 한다(tests/test_download_data.py). 2026-10-11 기록본은 이 고정 전의 실행이다.
 # [연결] 받은 원본은 scripts/inventory_data.py(재고 조사)와 scripts/prepare_data.py(정규화·분할·PCM 저장소)가
 # 읽는다.
 
@@ -31,8 +37,9 @@ from pathlib import Path
 # 필요한 파일만 골라 받는다(datasets 라이브러리로 전체를 불러오지 않고 원본 파일 그대로 받는다).
 from huggingface_hub import HfApi, snapshot_download
 
-# 내려받을 출처 목록. 각 항목: name(로컬 폴더 이름), repo(HF 데이터셋 저장소), revision(None이면 main),
-# allow(받을 파일 패턴), license(docs/data.md 표와 같은 라이선스 표기).
+# 내려받을 출처 목록. 각 항목: name(로컬 폴더 이름), repo(HF 데이터셋 저장소), revision(커밋을 조회할 브랜치
+# 이름, None이면 main; 내려받기는 이 이름이 아니라 조회된 커밋 sha로 한다), allow(받을 파일 패턴),
+# license(docs/data.md 표와 같은 라이선스 표기).
 # - Zeroth-Korean: README와 parquet(16 kHz FLAC 음성 포함)만.
 # - FLEURS: HF가 parquet로 변환해 둔 refs/convert/parquet 브랜치에서 한국어(ko_kr) parquet만
 #   받는다(docs/data.md 출처 표).
@@ -93,25 +100,32 @@ def main() -> None:
         # 이 출처의 예전 기록을 지우고 아래에서 새 기록으로 넣는다(같은 이름이 두 번 들어가지 않게).
         manifest = [m for m in manifest if m["name"] != src["name"]]
         # 저장소 메타데이터를 조회한다. gated가 참("auto"·"manual")이면 접근 승인이나 약관 동의가 필요한
-        # 저장소이므로, 사용자의 동의 없이 받지 않도록 여기서 중단한다. info.sha는 이 시점의 커밋으로, 아래
-        # 기록에 쓴다(다운로드는 같은 revision 이름으로 받으므로 그 사이에 저장소가 바뀌면 기록과 어긋날 수
-        # 있다).
+        # 저장소이므로, 사용자의 동의 없이 받지 않도록 여기서 중단한다. info.sha는 revision 이름이 이 시점에
+        # 가리키는 커밋이고, 아래 내려받기와 기록에 같은 값을 쓴다.
         info = api.dataset_info(src["repo"], revision=src["revision"])
         if info.gated:
             raise SystemExit(
                 f"{src['repo']} is gated ({info.gated}); refusing to download without the user's consent"
             )
+        # 조회 결과에 커밋 sha가 없으면(huggingface_hub 타입상 None일 수 있음) 고정할 커밋이 없다. 그때
+        # revision에 None을 넘기면 main을 그대로 따라가 기록과 어긋날 수 있으므로, 받지 않고 멈춘다.
+        if not info.sha:
+            rev = src["revision"] or "main"
+            raise SystemExit(f"{src['repo']}: no commit sha for revision {rev}; not downloading")
         local = dest / src["name"]
         print(
             f"[{src['name']}] {src['repo']} rev={src['revision'] or 'main'} sha={info.sha} -> {local}",
             flush=True,
         )
-        # 허용 패턴에 맞는 파일만 local_dir에 실제 파일로 받는다. 이미 받은 파일은 다시 받지 않으므로 중간에
-        # 끊겨도 다시 실행하면 이어서 받는다. 동시 다운로드 4개.
+        # 위에서 조회한 커밋(info.sha)에서 허용 패턴에 맞는 파일만 local_dir에 실제 파일로 받는다. 이름 대신
+        # 커밋을 넘기므로 조회 뒤 브랜치가 움직여도 기록한 커밋의 파일이 들어온다. 이미 받은 파일은 다시 받지
+        # 않으므로 중간에 끊겨도 다시 실행하면 이어서 받는다. 다시 실행할 때 브랜치가 움직였으면 새로 조회한
+        # 커밋과 내용(etag)이 다른 파일만 다시 받고, 새 커밋에서 지워진 파일은 local_dir에 그대로 남는다
+        # (snapshot_download는 파일을 지우지 않는다). 동시 다운로드 4개.
         snapshot_download(
             repo_id=src["repo"],
             repo_type="dataset",
-            revision=src["revision"],
+            revision=info.sha,
             allow_patterns=src["allow"],
             local_dir=str(local),
             max_workers=4,
@@ -119,6 +133,7 @@ def main() -> None:
         # 받은 파일 목록을 정렬해 기록한다. huggingface_hub가 local_dir 안에 만드는 .cache 폴더(다운로드
         # 메타데이터)는 데이터가 아니므로 뺀다. 경로는 OS와 무관하게 '/'로 적는다.
         files = sorted(p for p in local.rglob("*") if p.is_file() and ".cache" not in p.parts)
+        # revision은 사람이 읽는 브랜치 이름(main, refs/convert/parquet), commit_sha는 실제로 받은 커밋이다.
         manifest.append(
             {
                 "name": src["name"],
