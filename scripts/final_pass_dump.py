@@ -317,6 +317,11 @@ def cmd_dump(args, model, vocab: Vocab, device: torch.device) -> None:
         write_dump(followup.ROOT / args.out_dir, name, arrays, meta)
 
 
+# 명령행 인자. 기본값은 등록 측정(docs/experiments.md 규칙 변경 28)의 값이고, 연기 시험은
+# --device cpu --limit N --out-dir work/<폴더>로 줄여 돌린다(모듈 docstring의 사용법). 세션 구성
+# (청크·끝점·캐시 정책·step 경로·2차 패스)은 인자로 받지 않고 서버 명령행 기본값을 그대로
+# 쓴다(session_config): 덤프가 서비스 확정 자막과 같은 구성이어야 평가 도구가 P1 확정 가설과 재현 조건을
+# 대조할 수 있기 때문이다.
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="끝점 뒤 2차 패스의 프레임별 log-prob 통계 덤프(docs/experiments.md 규칙 변경 28). "
@@ -327,7 +332,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--manifests", default="dev_mix,dev_h", help="쉼표로 구분한 dev 세트 이름(등록: dev_mix,dev_h)"
     )
     p.add_argument("--checkpoint", default="outputs/stage4/trimtail/avg10.pt", help="측정 모델(최종 모델)")
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument(
+        "--device",
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="실행 장치(기본: CUDA가 보이면 cuda, 아니면 cpu). 등록 측정은 cuda(서버 기본 구성 그대로 graph "
+        "step·fp16 autocast)다. cpu는 step 경로 fast·fp32라 구성이 P1과 달라 평가 도구(confidence_eval·"
+        "bias_eval)가 재현 대조를 하지 않고 판정을 남기지 않는다(연기 시험용)",
+    )
     p.add_argument(
         "--out-dir",
         default="outputs/followup/final_pass_dump",
@@ -344,6 +355,10 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# 진입점: --top-k를 검사하고 표준 출력을 UTF-8로 바꾼 뒤(Windows 콘솔 기본 cp949에서 한글 메시지가 깨지지
+# 않게) 체크포인트를 올리고, 어휘 토큰 수를 체크포인트 출력 크기와 대조한 다음 덤프한다. 계산 전에 멈추는
+# 경우(SystemExit, 종료 코드 1): --top-k < 1, 어휘 크기 불일치, dev가 아닌 세트 이름, 결과 파일이 이미 있음
+# (--overwrite 없이), 서버 기본 2차 패스가 full이 아님.
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.top_k < 1:

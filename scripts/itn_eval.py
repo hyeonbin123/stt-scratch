@@ -193,6 +193,12 @@ def _recorded_sizes() -> dict[str, int]:
 
 
 # --- 디코딩 ------------------------------------------------------------------------------------------------
+# 디코딩 명령(규칙 변경 30). 세트 이름((가)와 dev 세트만, 봉인 세트는 거부)과 결과 파일(있으면 --overwrite
+# 없이 거부)을 계산 전에 확인하고, 어휘 토큰 수를 체크포인트 출력 크기와 대조한 뒤 세트마다 full 문맥
+# greedy(evaluate.decode_offline, ChunkSpec(0, -1); cuda면 fp16 autocast, --fp32나 cpu면 fp32)로 디코딩한다.
+# (가)는 먼저 parquet에서 PCM을 꺼내 <out-dir>/pcm/에 PcmStore 형식으로 쓴다. 출력:
+# <out-dir>/{세트}-full.jsonl(id·ref·hyp)과 decode.json(출처·정밀도, 세트별 발화 수·시간·디코딩 초·가설
+# SHA-256, (가)의 겹침 집계·parquet 크기).
 def cmd_decode(args) -> None:
     out_dir = ROOT / args.out_dir
     names = [n.strip() for n in args.sets.split(",") if n.strip()]
@@ -378,6 +384,16 @@ def git_state() -> dict:
         return {"git_head": None, "git_dirty": None}
 
 
+# 채점 명령(규칙 변경 30). 순서: 결과 파일 확인(있으면 --overwrite 없이 거부) → --decode 결과(decode.json,
+# (가) 가설, 새 dev_mix 가설)와 저장 4단계 가설(--dev-hyps) 읽기 → 재현 조건(check_reproduction: 새 dev_mix
+# 가설의 CER_ns가 저장 가설과 전체·한글 전용 각각 0.02포인트 안) → 채점 일치(scoring_consistency: ITN 없음
+# 채점 = 4단계 기록) → (가)와 (나)(dev_mix 숫자 발화 절반 B)의 ITN 전후 짝지은 비교(판정), 절반 A·dev_mix
+# 전체(보고), 가드 세트(dev_mix 한글 전용·dev_H 한글 전용)의 오탐 변경률·단순 변경률 → 판정 → 바뀐 표현 목록
+# <out-dir>/changes.jsonl(전사 조각이 들어 있어 outputs/ 쪽)과 reports/followup/itn.json(정답·가설 텍스트
+# 없음), 요약 한 줄(표준 출력). 판정은 재현 대조를 할 수 있을 때(최종 모델 체크포인트, --limit 없음, dev_mix를
+# 디코딩함)만 적고 아니면 null(연기 시험). 종료 코드: 0 = 결과를 씀, 5(REPRO_EXIT) = 대조했는데 재현 조건
+# 미충족(결과를 쓰지 않음), 1 = 그 밖의 실패(결과 파일이 이미 있음, 채점이 4단계 기록과 다름, --decode 결과
+# 파일이 없음 등).
 def cmd_score(args) -> None:
     out_path = ROOT / args.out
     if out_path.exists() and not args.overwrite:
@@ -545,6 +561,8 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# 진입점: 표준 출력을 UTF-8로 바꾸고(Windows 콘솔 기본 cp949에서 한글 메시지가 깨지지 않게) --decode·--score를
+# 이 순서로 한다(둘 다 없으면 멈춘다; 함께 주면 디코딩 직후 그 결과로 채점한다).
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):

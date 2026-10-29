@@ -368,10 +368,12 @@ def build_app(
     csp = page_csp(page)
 
     # Host 허용 목록(DNS 리바인딩 차단). Starlette는 나중에 등록한 미들웨어가 바깥에 오므로, 보안 헤더
-    # 미들웨어보다 먼저 등록해 안쪽에 두면 이 미들웨어의 400 거부 응답에도 보안 헤더가 붙는다. http 요청과
-    # websocket 핸드셰이크 모두 Host를 검사하며, websocket은 거부 응답(websocket.http.response.*)으로 수락
-    # 전에 막힌다(Starlette 1.7, uvicorn은 이 확장을 지원). www_redirect=False: 'www.' 리다이렉트는 이 서버에
-    # 쓸 일이 없다.
+    # 미들웨어보다 먼저 등록해 안쪽에 두면 이 미들웨어가 http 요청에 낸 400 거부 응답에도 보안 헤더가 붙는다.
+    # http 요청과 websocket 핸드셰이크 모두 Host를 검사하며, websocket은 거부
+    # 응답(websocket.http.response.*)으로 수락 전에 막힌다(Starlette 1.7, uvicorn은 이 확장을 지원). 이
+    # websocket 거부 응답에는 보안 헤더가 없다: 아래 보안 헤더 미들웨어(@app.middleware("http"))는 http
+    # scope만 거친다. 연결 업그레이드가 거부됐다는 응답이라 브라우저가 페이지로 렌더링하지 않으므로 그대로
+    # 둔다(docs/security.md). www_redirect=False: 'www.' 리다이렉트는 이 서버에 쓸 일이 없다.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False)
 
     # 모든 HTTP 응답에 공통 보안 헤더를 붙인다. setdefault라 경로가 직접 정한 헤더(페이지의 CSP)는 덮어쓰지

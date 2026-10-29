@@ -314,6 +314,15 @@ def verdict(half_b: dict) -> dict:
     }
 
 
+# 평가 명령(규칙 변경 28). 순서: 결과 파일 확인(있으면 --overwrite 없이 거부) → dev_mix·dev_H 덤프 읽기(npz
+# 해시·세그먼트 위치 검사, 덤프의 어휘 SHA-256이 지금 manifests/vocab.json과 같은지) → 재현
+# 조건(check_reproduction) → dev_mix 한글 전용 어절 표 → 절반 A에서 후보·Platt 선택 → 절반 B 보고·판정 →
+# 숫자·라틴을 포함한 절반 B와 dev_H(한글 전용)는 같은 선택·보정을 그대로 적용한 참고치 →
+# reports/followup/confidence.json과 요약 한 줄(표준 출력). 판정(verdict)은 재현 대조를 할 수 있을 때(덤프가
+# P1과 같은 체크포인트·구성의 전수 덤프)만 적고, 아니면(연기 시험) null로 쓴다. 종료 코드: 0 = 결과를 씀,
+# 5(REPRO_EXIT) = 대조했는데 재현 조건 미충족(결과 파일을 쓰지 않고 대조 내용을 표준 출력에 남김), 1 = 그 밖의
+# SystemExit(결과 파일이 이미 있음, 덤프 어휘·해시·위치 불일치, 덤프가 매니페스트 발화를 순서대로 덮지 않음,
+# 덤프 어절이 확정 가설과 다름 등).
 def cmd_eval(args) -> None:
     out_path = ROOT / args.out
     if out_path.exists() and not args.overwrite:
@@ -415,6 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# 진입점: 표준 출력을 UTF-8로 바꾸고(Windows 콘솔 기본 cp949에서 한글 메시지가 깨지지 않게) 평가한다.
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):

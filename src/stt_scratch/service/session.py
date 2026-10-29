@@ -191,9 +191,11 @@ class StreamSession:
             torch.cuda.synchronize()
         return log_probs, (time.perf_counter() - t0) * 1000
 
-    # 청크 하나 처리: 인코더 → greedy에 새 프레임 추가(절대 프레임 번호 기준) → 통계 기록 → 끝점 판정 →
-    # 이벤트. 끝점이 나오면 지금까지의 텍스트로 final(텍스트가 비면 endpoint)을 내고 세그먼트를 넘긴다. 끝점이
-    # 없고 새 토큰이 있으면 partial을 낸다.
+    # 청크 하나 처리: 인코더 → greedy에 새 프레임 추가(프레임 번호는 StreamState.frames_seen 기준: 인코더
+    # 상태를 새로 만든 뒤(연결, flush, 캐시를 비우는 끝점) 센 번호이고, REBASE_AT(2^16프레임) 이상이 되면
+    # 인코더 step이 청크 배수만큼 당긴 재기준된 번호다; model/streaming.py) → 통계 기록 → 끝점 판정 → 이벤트.
+    # 끝점이 나오면 지금까지의 텍스트로 final(텍스트가 비면 endpoint)을 내고 세그먼트를 넘긴다. 끝점이 없고 새
+    # 토큰이 있으면 partial을 낸다.
     def _process_chunk(self, mel_chunk: torch.Tensor) -> list[Event]:
         log_probs, ms = self._step(mel_chunk)
         if self.final_pass == "full":

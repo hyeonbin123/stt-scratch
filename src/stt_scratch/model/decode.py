@@ -77,7 +77,12 @@ def biased_batch(
 
 
 # 검증: tests/test_model.py test_greedy_state_matches_batch_decoding. tokens는 지금까지 낸 전체 토큰,
-# frame_of_token은 각 토큰이 나온 절대 출력 프레임이다(현재 이 값을 읽는 코드는 없다).
+# frame_of_token은 각 토큰이 나온 출력 프레임 번호(호출자가 넘긴 frame_offset + 청크 안 위치)다. 평가
+# 경로(evaluate.decode_streaming)는 발화 시작부터 센 번호를 넘기고, 서비스 세션은 StreamState.frames_seen으로
+# 만든 번호를 넘긴다. 그래서 서비스에서는 인코더 상태를 새로 만든 뒤(연결, flush, 캐시를 비우는 끝점) 처리한
+# 프레임이 REBASE_AT(2^16프레임, 25 fps에서 약 44분)에 이르면 이 값이 연결 이후 절대 번호가 아니라 청크
+# 배수만큼 당겨진 '재기준된 번호'가 되고, 재기준을 가로지르는 세그먼트에서는 값이 그만큼
+# 줄어든다(model/streaming.py의 StreamState·rebase_positions 설명). 현재 이 값을 읽는 코드는 없다.
 # 서비스에서는 세그먼트마다 새 상태로 시작한다. 그래서 끝점이 같은 토큰이 이어지는 구간에 걸리면 그 토큰이 한
 # 번 더 나올 수 있다(docs/experiments.md 6단계 결과 '세션').
 @dataclass
@@ -90,10 +95,11 @@ class GreedyState:
 
     prev: int = 0
     tokens: list[int] = field(default_factory=list)
-    frame_of_token: list[int] = field(default_factory=list)  # 토큰마다 나온 절대 출력 프레임
+    frame_of_token: list[int] = field(default_factory=list)  # 토큰마다 나온 출력 프레임(frame_offset 기준)
 
     # 로짓 대신 log-prob을 넘겨도 된다. 이전 토큰은 절대 고치지 않으므로 6단계에서 잰 부분 자막
-    # 수정률(UPWR)이 구조상 0이다(H6.3). frame_offset은 이 청크 첫 프레임의 절대 번호.
+    # 수정률(UPWR)이 구조상 0이다(H6.3). frame_offset은 이 청크 첫 프레임의 번호다(서비스 세션은
+    # StreamState.frames_seen 기준이라 긴 세션에서는 재기준된 번호; 위 설명).
     def push(self, logits: torch.Tensor, frame_offset: int, blank: int = 0) -> list[int]:
         """logits: 새 프레임들의 (T, V). 새로 나온 토큰만 돌려주고 tokens에 덧붙인다(이전 토큰은 그대로)."""
         new: list[int] = []
