@@ -287,5 +287,90 @@
    "commits": 59,
    "leaks": 0
   }
+ },
+ "recheck_2026_10_29": {
+  "reason": "Host allow list and WebSocket input/resource limits, /info status fields, web page connection lifecycle, stream_text on close events; certifi and filelock lock updates, CI token permissions and action commit pins, commit-pinned data download",
+  "server_args": "--device cpu --allowed-host host.docker.internal --port 8098",
+  "server_info": {
+   "device": "cpu",
+   "precision": "fp32",
+   "step_path": "fast",
+   "final_pass": "full",
+   "rule2_s": 0.8,
+   "cpu_threads": 1,
+   "warm_up_s": 15.19
+  },
+  "zap": {
+   "version": "2.17.0",
+   "baseline": [
+    {
+     "alert": "Modern Web Application",
+     "risk": "Informational (Medium)",
+     "count": 1
+    },
+    {
+     "alert": "Non-Storable Content",
+     "risk": "Informational (Medium)",
+     "count": 3
+    }
+   ],
+   "api": [
+    {
+     "alert": "Unexpected Content-Type was returned",
+     "risk": "Low (High)",
+     "count": 2
+    },
+    {
+     "alert": "A Client Error response code was returned by the server",
+     "risk": "Informational (High)",
+     "count": 9
+    },
+    {
+     "alert": "Non-Storable Content",
+     "risk": "Informational (Medium)",
+     "count": 2
+    }
+   ],
+   "note": "the cloud metadata rule's 7 paths now get 400 from the Host allow list (404 on 2026-10-18); alert kinds and risks are the same as on 2026-10-18"
+  },
+  "bandit": {
+   "high": 0,
+   "medium": 1,
+   "low": 43,
+   "by_test": {
+    "B101 LOW": 5,
+    "B104 MEDIUM": 1,
+    "B105 LOW": 9,
+    "B106 LOW": 3,
+    "B107 LOW": 2,
+    "B311 LOW": 5,
+    "B404 LOW": 6,
+    "B603 LOW": 9,
+    "B607 LOW": 4
+   },
+   "medium_note": "B104 on the WILDCARD_BIND_HOSTS comparison constant in server.py (false positive)"
+  },
+  "pip_audit": {
+   "packages_exported": 73,
+   "before_update": [
+    "certifi 2026.7.22 PYSEC-2026-4320 (fix 2026.10.18, 2026.10.19)",
+    "filelock 4.1.0: 17 advisories, all fixed in 4.2.1 (CVE-2026-112906, CVE-2026-112907, CVE-2026-112908, CVE-2026-112909, CVE-2026-112910, CVE-2026-112911, CVE-2026-112912, CVE-2026-112913, CVE-2026-112914, CVE-2026-112915, CVE-2026-112934, CVE-2026-112935, CVE-2026-112937, CVE-2026-112938, CVE-2026-112939, CVE-2026-112940, CVE-2026-112941)",
+    "setuptools 81.0.0 PYSEC-2026-3447 (fix 83.0.0)",
+    "setuptools 81.0.0 GHSA-xmj3-9gf7-h52w (fix 84.1.0)"
+   ],
+   "updated": {
+    "certifi": "2026.7.22 -> 2026.10.23",
+    "filelock": "4.1.0 -> 4.2.4"
+   },
+   "vulnerable": [
+    "setuptools 81.0.0 PYSEC-2026-3447 (fix 83.0.0)",
+    "setuptools 81.0.0 GHSA-xmj3-9gf7-h52w (fix 84.1.0)",
+    "torch 2.11.0 PYSEC-2025-194 (fix 2.13.0; audited as the PyPI version)"
+   ]
+  },
+  "gitleaks": {
+   "commits": 81,
+   "leaks": 0
+  }
  }
 }

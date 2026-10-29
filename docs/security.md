@@ -41,6 +41,18 @@
 - **pip-audit 2.10.1**: `uv export` 73개 패키지(미사용 `datasets`·`sentencepiece` 제거 뒤). 알려진 취약점은 10-14와 같은 두 가지(setuptools 81.0.0, torch 2.11.0을 PyPI 버전으로 따로 점검)이고 이 프로젝트의 사용 방식에는 해당하지 않는다(위 설명 그대로)
 - **gitleaks 8.30.1**: 커밋 59개, 약 33 MB에서 비밀 정보 0건
 
+## 재점검 (2026-10-29, Host 허용 목록·의존성 갱신 뒤)
+
+10-24~29에 서버에 Host 허용 목록과 WebSocket 입력·자원 상한(위 'WebSocket 추가 방어'), `/info` 상태 필드(CUDA Graph 캡처 상태, 어휘 SHA-256, CPU 스레드 수, 상한 값), 2차 패스를 켠 세션의 확정 이벤트 `stream_text` 필드가 더해지고 웹 페이지의 연결·오디오 수명 관리가 바뀌었으며, 의존성 잠금 파일·CI·데이터 내려받기 스크립트도 바뀌어 같은 도구로 다시 점검했다. 대상 서버는 `--device cpu --allowed-host host.docker.internal --port 8098`로 띄웠다(ZAP은 HTTP 경로만 보므로 장치와 무관하고, 점검 중 GPU를 비워 둔다; `/info`: device cpu, fp32, step_path fast, final_pass full, rule2 0.8 s, cpu_threads 1).
+
+- **OWASP ZAP 2.17.0**: 기본 스캔 Medium·Low 0건(정보 2건: 캐시 금지 응답, 자바스크립트 페이지), API 스캔 Low 1건(루트 페이지 `/`의 "Unexpected Content-Type", 10-14·10-18과 같은 오탐)·정보 2건(클라이언트 오류 응답, 캐시 금지 응답)으로 10-18과 경고 종류·위험도가 같다. 달라진 점은 능동 스캔의 클라우드 메타데이터 규칙이 보내는 요청(`/latest/meta-data/`, `/computeMetadata/v1/` 등 7개 경로)이 10-18에는 404였고 이번에는 400이라는 것이다. 알 수 없는 경로라도 허용된 Host면 404가 나오므로, 이 요청들이 목록 밖의 Host로 와서 Host 허용 목록에서 거부됐다는 뜻이다. 보고서 `reports/security/zap-{baseline,api}-2026-10-29.md`
+- **bandit 1.9.4**: High 0건, Medium 1건(B104 "Possible binding to all interfaces": `server.py`의 상수 `WILDCARD_BIND_HOSTS = ("0.0.0.0", "[::]")`. 모든 인터페이스 바인드 주소를 알아보고 Host 허용 목록에서 빼는 데 쓰는 비교용 값이라 오탐이다. 기본 바인드는 그대로 127.0.0.1). Low 43건은 10-18과 같은 종류(`assert`, `random`, 고정 인자 `subprocess`, 이름에 'pass'가 든 옵션 값을 비밀번호로 오인한 B105·B106·B107)이고, 새로 더해진 7건은 사후 분석 `scripts/sealed_breakdown.py`의 `git` 하위 프로세스(인자 목록, 셸 없음, `shutil.which`로 찾은 실행 파일; B404·B603)와 측정 도구(`scripts/stage6.py`, `scripts/stream_client.py`, `scripts/followup.py`)가 2차 패스 값 `"full"`을 비교하는 줄(B105)이다
+- **pip-audit 2.10.1**: `uv export --frozen`의 73개 패키지(10-18과 같은 목록이고 certifi·filelock 버전만 다름). torch·torchaudio는 같은 번호의 PyPI 버전으로 따로 점검했다. 갱신 전에는 3패키지에서 알려진 취약점이 나왔다: certifi 2026.7.22의 PYSEC-2026-4320(GHSA-6q48-6c7w-9gw2, 번들 CA 저장소의 한 루트 아래 중간 CA 개인 키가 유출돼 경로상 공격자가 임의 호스트 인증서를 만들 수 있음, 2026.10.19에서 수정), filelock 4.1.0의 17건(모두 4.2.1에서 수정), setuptools 81.0.0의 2건. 서비스는 외부로 TLS 연결을 하지 않고 데이터 내려받기도 끝나 실제 위험은 낮지만, 공개 잠금 파일과 CI가 알려진 취약 버전을 설치하지 않도록 잠금 파일에서 certifi를 2026.10.23, filelock을 4.2.4로 올렸다(`uv lock --upgrade-package`로 그 패키지만; 다른 패키지 줄은 그대로). 갱신 뒤 남은 것은 두 패키지이고(플랫폼 표지 때문에 Windows에서 건너뛰는 리눅스 전용 CUDA 휠까지 보려고 표지를 지운 목록으로 다시 점검해도 같음) 이 프로젝트의 사용 방식에는 해당하지 않는다
+  - setuptools 81.0.0: 10-14의 PYSEC-2026-3447(CVE-2026-59890, 위 설명)과 새 GHSA-xmj3-9gf7-h52w(84.1.0에서 수정: Windows에서 wheel의 `namespace_packages.txt` 값 때문에 setuptools의 옛 wheel 설치 경로 `Wheel.install_as_egg`가 지정한 폴더 밖에 `__init__.py`를 만듦). 이 프로젝트는 패키지를 uv로 설치하고 hatchling으로 빌드해 그 경로를 쓰지 않는다. torch 2.11.0+cu128이 `setuptools<82`를 요구해 torch를 바꾸지 않고는 올릴 수 없다(`uv lock --upgrade-package setuptools`가 81.0.0에 머문다)
+  - torch 2.11.0(PyPI 버전으로 점검): 10-14와 같은 PYSEC-2025-194(CVE-2025-3000, 코드에서 쓰지 않는 `torch.jit.script`). 측정 환경이라 올리지 않는다
+- **gitleaks 8.30.1**: 커밋 81개, 약 36.8 MB에서 비밀 정보 0건
+- **CI·데이터 출처 고정**: `.github/workflows/ci.yml`은 최상위 `permissions: contents: read`로 GITHUB_TOKEN을 읽기 전용으로 두고, 두 액션(`actions/checkout` v7.0.1, `astral-sh/setup-uv` v10.2.0)을 태그 대신 그 릴리스의 커밋 SHA로 고정한다(태그를 옮겨도 다른 코드가 실행되지 않음). 설치 단계의 해시 검증(`--require-hashes`)은 CPU torch 휠을 잠금 파일과 따로 받는 구조라 넣지 않았다(비밀값·배포 권한이 없는 테스트 전용 워크플로). `scripts/download_data.py`는 이제 조회한 커밋 sha 그대로 내려받는다(전에는 sha를 기록만 하고 움직이는 브랜치 이름으로 받았다). 10-29 메타데이터 조회(데이터는 다시 받지 않음)로 `reports/data/download-manifest-2026-10-11.json`에 기록된 네 출처의 커밋이 모두 sha로 열리고 기록과 같은 파일·크기를 가리키며 그 뒤 출처 브랜치가 움직이지 않았음을 확인했다
+
 ## 다시 돌리는 방법
 
 2026-10-24부터 서버에 Host 허용 목록이 있어, Docker 컨테이너의 ZAP이 붙는 이름 `host.docker.internal`을 `--allowed-host`로 더해야 한다(아니면 모든 요청이 400으로 거부된다). ZAP은 HTTP 경로만 보므로 모델 장치는 결과와 무관하고, 점검 중 GPU를 비워 두려면 `--device cpu`로 띄운다.
@@ -50,7 +62,7 @@ uv run python -m stt_scratch.service.server --device cpu --allowed-host host.doc
 docker run --rm -v "$PWD/work/security/zap:/zap/wrk:rw" zaproxy/zap-stable zap-baseline.py -t http://host.docker.internal:8765/ -J baseline.json -w baseline.md -I
 docker run --rm -v "$PWD/work/security/zap:/zap/wrk:rw" zaproxy/zap-stable zap-api-scan.py -t http://host.docker.internal:8765/openapi.json -f openapi -J api.json -w api.md -I
 uvx bandit -r src scripts
-uv export --no-hashes --format requirements-txt --no-emit-project > work/security/requirements.txt && uvx pip-audit -r work/security/requirements.txt --no-deps --disable-pip
+uv export --frozen --no-hashes --format requirements-txt --no-emit-project > work/security/requirements.txt && uvx pip-audit -r work/security/requirements.txt --no-deps --disable-pip
 docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:latest git /repo
 ```
 
