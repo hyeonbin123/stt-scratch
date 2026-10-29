@@ -15,6 +15,8 @@
 
 받는 법: `uv run python scripts/download_data.py` (약 5.5 GB; `--only` 로 일부만). 스크립트가 게이트 여부를 먼저 확인하고 게이트가 있으면 멈춘다.
 
+2026-10-29 추가: 스크립트는 출처마다 브랜치 이름(`main`, FLEURS는 `refs/convert/parquet`)이 그 시점에 가리키는 커밋 sha를 조회한 뒤 그 커밋 그대로 내려받는다(조회와 내려받기 사이에 브랜치가 움직여도 받은 파일이 기록한 커밋의 것이다; 조회 결과에 sha가 없으면 받지 않고 멈춘다). `data/raw/manifest.json`에는 브랜치 이름(`revision`)과 실제로 받은 커밋(`commit_sha`)을 함께 적는다. 다시 받을 때 그사이 브랜치가 움직였으면 기록본(`reports/data/download-manifest-2026-10-11.json`)과 다른 커밋을 받게 되므로 `commit_sha`를 기록본과 대조한다. 2026-10-11 기록본은 이 고정 전의 실행(커밋 sha는 기록만 하고 브랜치 이름으로 받음)이지만, 기록된 네 출처의 커밋이 기록과 같은 파일·크기를 가리키고 그 뒤 브랜치가 움직이지 않았음을 2026-10-29 메타데이터 조회(데이터는 다시 받지 않음)로 확인했다(`docs/security.md` 2026-10-29 재점검).
+
 쓰지 않는 것: KsponSpeech(AI Hub 승인·내국인 전용), ClovaCall(학술 신청), OpenSLR 58/97/113·KSS(NC 또는 ND 라이선스), Common Voice 공식 저장소(2025-10부터 Mozilla Data Collective 계정 필요).
 
 ### 귀속 (2026-10-24 확인)

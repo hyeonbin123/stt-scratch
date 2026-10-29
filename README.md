@@ -53,7 +53,7 @@ uv run pytest -q
 uv run ruff format src scripts tests && uv run ruff check src scripts tests
 ```
 
-테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금), 후속 옵션(빠른 step 경로가 eager와 비트 단위로 같음, 2차 패스 = 세그먼트의 전체 문맥 디코딩), 긴 세션의 RoPE 위치 재기준(임계 미만 스트림은 비트 단위로 그대로, 재기준해도 세 step 경로가 비트 단위로 같고 0에서 시작한 스트림과 1e-4 안, 반복 재기준 뒤에도 청크 격자·좌측 문맥 유지), 체크포인트 원자적 저장(임시 파일에 다 쓴 뒤 바꿔 넣으므로 저장 중 오류·중단에도 이전 `last.pt`가 바이트 단위로 그대로), 서버 상태 보고(`/info`의 어휘 SHA-256·스레드 수·CUDA Graph 캡처 상태, 캡처 실패 시 fast 폴백과 경고, 어휘 크기 검사, CPU 장치의 기본 1스레드, `--step-path`·`--final-pass`가 세션에 실제로 전달됨), 측정 도구(2차 패스를 켠 서버의 확정 이벤트에만 `stream_text`가 붙음, 클라이언트 요약이 기록의 서버 설정에 따라 텍스트 비교를 고르고 판별할 수 없으면 null, `--replay-check`의 오프라인 재생이 서버 경로와 같은 확정 기록을 냄, 커밋된 6단계 클라이언트 기록을 다시 요약해도 기록 값이 그대로, 연속 음성 스트림 구성과 `continuous` 명령, drift의 새 인자 기본값이 6단계 동작), 봉인 test 사후 분석(군집이 발화이면 군집 부트스트랩이 등록 부트스트랩과 비트 단위로 같음, 저장된 보고서 재현, whisper 앵커와 짝지을 때 결합이 일대일이고 정답이 같아야 함; 실데이터가 필요한 재현 확인은 `data/raw`와 whisper-ko-ft 체크아웃이 없으면 건너뜀), 브라우저 자막 페이지 스크립트의 연결·오디오 수명 관리(`tests/web_page_harness.js`가 Node.js vm의 가짜 DOM·WebSocket·Web Audio·가상 타이머로 `web/index.html`의 스크립트를 돌림: 멈춤 직후 재시작, 시작 실패, 마이크 트랙 정지, 16 kHz가 아닐 때 전송 안 함, endpoint 처리; `node`가 없으면 건너뜀)를 확인한다. CUDA가 없으면 fp16·CUDA Graph 테스트는 건너뛴다. GitHub Actions(`.github/workflows/ci.yml`)가 push마다 CPU에서 ruff와 pytest를 돈다.
+테스트는 0단계 게이트(미래 누출 없음, 캐시 스트리밍 == 오프라인 fp32 1e-5 / fp16 1e-2, CTC 입력 fp32, 과적합), 서비스 경로, 4단계 지연 계산 도우미, 7단계 봉인 test 보호 장치(한 번만 실행·재개 조건·잠금), 후속 옵션(빠른 step 경로가 eager와 비트 단위로 같음, 2차 패스 = 세그먼트의 전체 문맥 디코딩), 긴 세션의 RoPE 위치 재기준(임계 미만 스트림은 비트 단위로 그대로, 재기준해도 세 step 경로가 비트 단위로 같고 0에서 시작한 스트림과 1e-4 안, 반복 재기준 뒤에도 청크 격자·좌측 문맥 유지), 체크포인트 원자적 저장(임시 파일에 다 쓴 뒤 바꿔 넣으므로 저장 중 오류·중단에도 이전 `last.pt`가 바이트 단위로 그대로), 서버 상태 보고(`/info`의 어휘 SHA-256·스레드 수·CUDA Graph 캡처 상태, 캡처 실패 시 fast 폴백과 경고, 어휘 크기 검사, CPU 장치의 기본 1스레드, `--step-path`·`--final-pass`가 세션에 실제로 전달됨), 측정 도구(2차 패스를 켠 서버의 확정 이벤트에만 `stream_text`가 붙음, 클라이언트 요약이 기록의 서버 설정에 따라 텍스트 비교를 고르고 판별할 수 없으면 null, `--replay-check`의 오프라인 재생이 서버 경로와 같은 확정 기록을 냄, 커밋된 6단계 클라이언트 기록을 다시 요약해도 기록 값이 그대로, 연속 음성 스트림 구성과 `continuous` 명령, drift의 새 인자 기본값이 6단계 동작), 봉인 test 사후 분석(군집이 발화이면 군집 부트스트랩이 등록 부트스트랩과 비트 단위로 같음, 저장된 보고서 재현, whisper 앵커와 짝지을 때 결합이 일대일이고 정답이 같아야 함; 실데이터가 필요한 재현 확인은 `data/raw`와 whisper-ko-ft 체크아웃이 없으면 건너뜀), 브라우저 자막 페이지 스크립트의 연결·오디오 수명 관리(`tests/web_page_harness.js`가 Node.js vm의 가짜 DOM·WebSocket·Web Audio·가상 타이머로 `web/index.html`의 스크립트를 돌림: 멈춤 직후 재시작, 시작 실패, 마이크 트랙 정지, 16 kHz가 아닐 때 전송 안 함, endpoint 처리; `node`가 없으면 건너뜀), 데이터 내려받기(조회한 커밋 sha 그대로 받고, 게이트가 있는 저장소나 sha가 없는 조회 결과에서는 받기 전에 멈춤; 네트워크 없이 가짜 Hub로), 확정 자막 후속 아이디어의 측정 도구(측정 전 등록, `docs/experiments.md` 규칙 변경 28~30)인 어절 신뢰도(토큰 구간이 greedy 축약과 같음, 점수·어절 정렬 라벨·AUROC·ECE·Platt 보정이 정의대로, 2차 패스 덤프 세션의 이벤트가 서비스 세션과 같음, 절반 A에서 고르고 절반 B에서 판정, 덤프가 기록된 확정 가설을 재현하지 않으면 판정 없이 멈춤), 핫워드 편향(목록이 비면 greedy와 비트 단위로 같음, 2위 후보인 목록 어절이 보너스로 1위가 됨, 끊긴 부분 일치의 보너스 회수, 결정성, 가지치기 없는 빔이 모든 정렬 경로를 펼친 계산과 같음, 실시간 디코딩이 덤프 배열로 한 디코딩과 같음, 평가·지연 측정이 끝까지 돎), 숫자 역정규화(등록 표의 변환과 오탐 방지, 결정성·두 번 적용해도 같음, 평가 세트의 학습 겹침 제외, parquet에서 꺼낸 PCM이 원본 표본과 같음, 작은 무작위 모델로 디코딩부터 채점·판정까지)를 확인한다. CUDA가 없으면 fp16·CUDA Graph 테스트는 건너뛴다. GitHub Actions(`.github/workflows/ci.yml`)가 push마다 CPU에서 ruff와 pytest를 돈다.
 
 ## 학습·평가
 
@@ -72,11 +72,17 @@ uv run python scripts/sealed_breakdown.py --anchor-report ../whisper-ko-ft/repor
 uv run python scripts/cluster_ci.py
 uv run python -m stt_scratch.evaluate --checkpoint outputs/stage2/runA/avg10.pt --manifest dev_mix --chunk 8 --left 128 --streaming
 uv run python scripts/followup.py gate   # after Stage 7, dev only: gate, timing, exit6, session, final-cpu, summary, continuous
+uv run python scripts/final_pass_dump.py --manifests dev_mix,dev_h   # rule change 28, dev only: final-pass dump (GPU)
+uv run python scripts/confidence_eval.py   # word confidence of the final captions, from the dump (CPU)
+uv run python scripts/bias_eval.py --latency --device cuda   # rule change 29: hotword biasing latency; without --latency it evaluates on the dump
+uv run python scripts/itn_eval.py --decode --score   # rule change 30: number display ITN
 ```
 
 `train.py`는 매 epoch `epochs.jsonl`에 dev CER과 dev CTC 손실을, `train.jsonl`에 손실·LR·GradScaler scale·GPU 메모리를 남기고 체크포인트를 저장한다. 발산 판정, 재개(`--resume`, 처방 대조), SpecAugment 커리큘럼(epoch 3부터), QK-norm은 `docs/experiments.md` "fp16 규칙"과 "규칙 변경"에 있다. Windows에서는 PyTorch 할당기 조각이 커져 GPU 메모리가 넘치지 않도록 `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.8,max_split_size_mb:256`과 `--cuda-memory-fraction 0.8`을 함께 쓴다.
 
 4단계 지연 측정의 기준 정렬은 Montreal Forced Aligner 3.4.3 + `korean_mfa` 3.0으로 만든다(`scripts/export_mfa_corpus.py`로 내보낸 뒤 `mfa align ... --g2p_model_path korean_mfa --single_speaker --output_format csv`; 한국어 토큰화에 `python-mecab-ko` 필요). 7단계 봉인 test(`scripts/stage7.py`)는 확인 플래그를 요구하고 한 번만 실행된다. 봉인 test 사후 분석(저장된 가설만 읽음, 새 디코딩 없음)은 `scripts/sealed_breakdown.py`(학습 문장 여부 분할; whisper-ko-ft 발화별 보고서와 숫자 발화 목록을 주면 앵커 숫자 표기 분석도 하며, 행 번호 id를 원래 id로 잇는 데 `data/raw`의 Zeroth parquet가 필요)와 `scripts/cluster_ci.py`(문장·화자 군집 부트스트랩 보조 구간)다.
+
+확정 자막 후속 아이디어 세 가지(어절 신뢰도, 핫워드 문맥 편향, 숫자 표시 역정규화)는 2026-10-29에 측정 규칙(`docs/experiments.md` 규칙 변경 28~30)과 도구만 등록했고 아직 재지 않았다. `scripts/final_pass_dump.py`가 끝점 뒤 2차 패스의 프레임별 log-prob 통계를 `outputs/`에 남기면 `scripts/confidence_eval.py`(어절 신뢰도)와 `scripts/bias_eval.py`(핫워드 편향; `--latency`는 2차 패스 지연)가 그것을 다시 읽고, `scripts/itn_eval.py`는 학습에서 뺀 FLEURS 숫자 발화를 디코딩해(`--decode`) 역정규화 전후를 채점한다(`--score`). 셋 다 서비스에는 연결하지 않았고, 결과가 나와도 서버 기본값은 그대로다(채택되면 옵션으로만 더한다).
 
 ## 스트리밍 서비스 (6단계)
 
@@ -108,15 +114,18 @@ uv run python scripts/stream_client.py --summarize --name client-dev_h-mine
 ```
 src/stt_scratch/   text(정규화·어휘), metrics(CER·발화·군집 부트스트랩), data(매니페스트·PCM 저장소·배치),
                    model/(features, subsampling, attention, conv, conformer, ctc, decode, streaming),
-                   train, evaluate, service/(endpoint, session, server)
+                   train, evaluate, service/(endpoint, session, server),
+                   confidence(어절 신뢰도), biasing(핫워드 편향 prefix beam), itn(숫자 표시 역정규화)
 scripts/           데이터 내려받기·재고·준비, mel 통계, 벤치, 단계별 실행기(stage1~7), 체크포인트 평균,
                    스트리밍 클라이언트, 진단(diag_*), 학습 요약, 7단계 뒤 후속 측정(followup),
-                   봉인 test 사후 분석(sealed_breakdown, cluster_ci)
+                   봉인 test 사후 분석(sealed_breakdown, cluster_ci),
+                   확정 자막 후속 아이디어 측정(final_pass_dump, confidence_eval, bias_eval, itn_eval)
 tests/             게이트 테스트(test_model), 전처리(test_prepare_data), 서비스(test_service),
                    4단계 지연 도우미(test_latency), 봉인 test 보호 장치(test_stage7_guards),
                    빠른 step 경로·조기 종료·위치 재기준(test_fast_streaming), 끝점 뒤 2차 패스(test_final_pass),
                    체크포인트 원자적 저장(test_train_io), 사후 분석(test_sealed_breakdown, test_cluster_bootstrap),
-                   측정 도구(test_stream_client, test_followup_continuous),
+                   측정 도구(test_stream_client, test_followup_continuous), 데이터 내려받기(test_download_data),
+                   어절 신뢰도(test_confidence), 핫워드 편향(test_biasing), 숫자 역정규화(test_itn),
                    브라우저 페이지 스크립트(test_web_page + Node.js 하네스 web_page_harness.js)
 docs/              survey/(조사·결정), experiments.md(규칙·결과), plan.md, data.md, ai-verification.md, security.md
 manifests/         분할 매니페스트, 어휘, mel 통계 (커밋)
