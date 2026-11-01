@@ -1,0 +1,235 @@
+{
+ "rule": "docs/experiments.md rule change 28",
+ "evaluated": {
+  "git_head": "3b7178359eb62fc376f4aa99702f66fef75f02f0",
+  "git_dirty": false,
+  "time": "2026-11-01 18:22:05"
+ },
+ "dumps": {
+  "dev_mix": {
+   "npz_sha256": "96da123deae2847cb03db56e7a4c7c243728b2fed674f226156af59037064b21",
+   "provenance": {
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+    "git_head": "3b7178359eb62fc376f4aa99702f66fef75f02f0",
+    "git_dirty": false,
+    "device": "cuda",
+    "gpu": "NVIDIA GeForce RTX 2080 Ti",
+    "torch": "2.11.0+cu128",
+    "limit": 0,
+    "started": "2026-11-01 17:55:54"
+   },
+   "config": {
+    "chunk": 8,
+    "left": 128,
+    "blank_threshold": 0.8,
+    "rule1_s": 2.4,
+    "rule2_s": 0.8,
+    "rule3_s": 20.0,
+    "reset_cache_on_endpoint": false,
+    "step_path": "graph",
+    "final_pass": "full",
+    "final_pass_bucket": 128,
+    "precision": "fp16-autocast",
+    "tail_s": 3.0,
+    "tail_noise": "-60 dBFS gaussian, seed = utterance index (as scripts/followup.py session)",
+    "top_k": 10
+   },
+   "graph": {
+    "captured": true,
+    "failed": null
+   },
+   "frames": 183744,
+   "segments": 2132,
+   "utterances": 700
+  },
+  "dev_h": {
+   "npz_sha256": "3c55e4d52ed0af02666298bf44e6c05bd0a71b8b5a6a4b5472d7a3935321f486",
+   "provenance": {
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+    "git_head": "3b7178359eb62fc376f4aa99702f66fef75f02f0",
+    "git_dirty": false,
+    "device": "cuda",
+    "gpu": "NVIDIA GeForce RTX 2080 Ti",
+    "torch": "2.11.0+cu128",
+    "limit": 0,
+    "started": "2026-11-01 18:21:59"
+   },
+   "config": {
+    "chunk": 8,
+    "left": 128,
+    "blank_threshold": 0.8,
+    "rule1_s": 2.4,
+    "rule2_s": 0.8,
+    "rule3_s": 20.0,
+    "reset_cache_on_endpoint": false,
+    "step_path": "graph",
+    "final_pass": "full",
+    "final_pass_bucket": 128,
+    "precision": "fp16-autocast",
+    "tail_s": 3.0,
+    "tail_noise": "-60 dBFS gaussian, seed = utterance index (as scripts/followup.py session)",
+    "top_k": 10
+   },
+   "graph": {
+    "captured": true,
+    "failed": null
+   },
+   "frames": 321482,
+   "segments": 2802,
+   "utterances": 1113
+  }
+ },
+ "reproduction": {
+  "applicable": true,
+  "tolerance_pp": 0.02,
+  "dev_mix": {
+   "utterances": 700,
+   "exact_match": 700,
+   "cer_ns_dump": 0.22846938187683621,
+   "cer_ns_recorded": 0.22846938187683621,
+   "within_tolerance": true
+  },
+  "dev_h": {
+   "utterances": 1113,
+   "exact_match": 1113,
+   "cer_ns_dump": 0.16014695445246943,
+   "cer_ns_recorded": 0.16014695445246943,
+   "within_tolerance": true
+  },
+  "met": true
+ },
+ "subset": "hangul-only utterances",
+ "split": {
+  "rule": "SHA-256 of the utterance id (UTF-8): first byte even = A (selection), odd = B (verdict)",
+  "half_a_utterances": 297,
+  "half_b_utterances": 336
+ },
+ "selection": {
+  "half": "A",
+  "utterances": 297,
+  "words": 2678,
+  "error_words": 1283,
+  "auroc_half_a": {
+   "entropy_min": 0.873799366963071,
+   "entropy_mean": 0.875975606008543,
+   "maxprob_min": 0.8677385831259062,
+   "maxprob_mean": 0.8720128395310052
+  },
+  "chosen": "entropy_mean",
+  "platt": {
+   "a": 0.8477686378416198,
+   "b": -3.319702918314655,
+   "iterations": 7,
+   "converged": true
+  }
+ },
+ "dev_mix_half_b": {
+  "utterances": 336,
+  "words": 3141,
+  "error_words": 1438,
+  "error_word_share": 0.45781598217128305,
+  "alignment": {
+   "equal": 1703,
+   "substitute": 1344,
+   "insert": 94,
+   "delete": 171
+  },
+  "wer": 0.5,
+  "auroc": 0.8818325184142849,
+  "auroc_ci": {
+   "low": 0.8689692742106162,
+   "high": 0.8934504276588523,
+   "resamples": 1000
+  },
+  "ece": 0.04467968606735814,
+  "ece_ci": {
+   "low": 0.03714432839211139,
+   "high": 0.05975432981174642,
+   "resamples": 1000
+  },
+  "ece_uncalibrated": 0.41053087153013,
+  "brier": 0.14068973468025547,
+  "mean_confidence": 0.5334953917010915,
+  "underline": {
+   "tau": 0.5,
+   "underlined_share": 0.5367717287488061,
+   "precision": 0.7396204033214709,
+   "recall": 0.8671766342141863
+  },
+  "spacing_only_errors": 38,
+  "spacing_as_correct": {
+   "auroc": 0.8885287601542627,
+   "ece": 0.04948560024122641
+  },
+  "candidates_auroc": {
+   "entropy_min": 0.881840685299688,
+   "entropy_mean": 0.8818325184142849,
+   "maxprob_min": 0.8753267775021908,
+   "maxprob_mean": 0.8774317922148348
+  }
+ },
+ "dev_mix_half_b_all_utterances": {
+  "utterances": 378,
+  "words": 3931,
+  "error_words": 1883,
+  "auroc": 0.8424827506804302,
+  "ece": 0.059047532083199794
+ },
+ "dev_h_reference": {
+  "utterances": 1113,
+  "words": 16269,
+  "error_words": 6499,
+  "error_word_share": 0.3994713873010019,
+  "alignment": {
+   "equal": 9770,
+   "substitute": 5924,
+   "insert": 575,
+   "delete": 950
+  },
+  "wer": 0.44754866618601297,
+  "auroc": 0.862658131957314,
+  "auroc_ci": {
+   "low": 0.8571537058288717,
+   "high": 0.8682214225602389,
+   "resamples": 1000
+  },
+  "ece": 0.036135968633461094,
+  "ece_ci": {
+   "low": 0.03201787581845051,
+   "high": 0.042845467911934394,
+   "resamples": 1000
+  },
+  "ece_uncalibrated": 0.36530798736051284,
+  "brier": 0.14789474754876167,
+  "mean_confidence": 0.6033810386909728,
+  "underline": {
+   "tau": 0.5,
+   "underlined_share": 0.44274386870735755,
+   "precision": 0.7116479244759129,
+   "recall": 0.7887367287274966
+  },
+  "spacing_only_errors": 374,
+  "spacing_as_correct": {
+   "auroc": 0.8721167111955193,
+   "ece": 0.03943240732859999
+  },
+  "candidates_auroc": {
+   "entropy_min": 0.862333422526385,
+   "entropy_mean": 0.8626584863146413,
+   "maxprob_min": 0.8597592212832366,
+   "maxprob_mean": 0.8608410269558832
+  }
+ },
+ "verdict": {
+  "auroc_threshold": 0.8,
+  "ece_threshold": 0.05,
+  "auroc_met": true,
+  "ece_met": true,
+  "adopted": true,
+  "intervals_within_thresholds": false,
+  "expression": "met_by_point_estimate_only",
+  "adopted_means": "offer the optional final-event field words [{w, conf}] and an underline display option in a separate commit; server defaults and the default page stay unchanged"
+ }
+}

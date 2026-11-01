@@ -1,0 +1,256 @@
+{
+ "rule": "docs/experiments.md rule change 30",
+ "evaluated": {
+  "git_head": "3b7178359eb62fc376f4aa99702f66fef75f02f0",
+  "git_dirty": false,
+  "time": "2026-11-01 18:24:02",
+  "itn_sha256": "9f7421e4664a3468a536aad007ae8bc58adf0768696f530f123421877c24eb79"
+ },
+ "decode": {
+  "rule": "docs/experiments.md rule change 30",
+  "mode": "full",
+  "precision": "fp16-autocast",
+  "provenance": {
+   "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+   "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+   "git_head": "3b7178359eb62fc376f4aa99702f66fef75f02f0",
+   "git_dirty": false,
+   "device": "cuda",
+   "gpu": "NVIDIA GeForce RTX 2080 Ti",
+   "torch": "2.11.0+cu128",
+   "limit": 0,
+   "started": "2026-11-01 18:23:58"
+  },
+  "sets": {
+   "fleurs_train_digit": {
+    "utterances": 619,
+    "hours": 2.256,
+    "decode_s": 14.6,
+    "hyps_sha256": "a896dfc5e352c2e4fb1c9f67a5898625cdd30ba02f39da3b9970608e63ed2c8f",
+    "digit_excluded": 619,
+    "overlap_text": 0,
+    "overlap_sentence": 0,
+    "kept": 619,
+    "sentences": 354,
+    "over_20s": 41,
+    "extracted": 619,
+    "parquet": [
+     {
+      "path": "fleurs_ko/ko_kr/train/0000.parquet",
+      "bytes": 1814793938,
+      "download_manifest_bytes": 1814793938
+     }
+    ]
+   },
+   "dev_mix": {
+    "utterances": 700,
+    "hours": 1.459,
+    "decode_s": 9.0,
+    "hyps_sha256": "3bc79cea413ef46a9684cdd0300ee4af1fe3874c29e8cd75b63d3670caadc422"
+   }
+  }
+ },
+ "dev_hypotheses": {
+  "dev_mix": {
+   "path": "reports/stage4/hyps/trimtail-avg10-dev_mix-full.jsonl",
+   "sha256": "cb3123ef11b89de795e26197f656dfa422676db653c4f679e9de43d76f4b5de9"
+  },
+  "dev_h": {
+   "path": "reports/stage4/hyps/trimtail-avg10-dev_h-full.jsonl",
+   "sha256": "e54a4ab81b506d21e759d4e1f66b2f3cecbc63c7c26fbd0ea2bd7f650c4fc8eb"
+  }
+ },
+ "reproduction": {
+  "applicable": true,
+  "tolerance_pp": 0.02,
+  "precision": "fp16-autocast",
+  "exact_match": 700,
+  "utterances": 700,
+  "all": {
+   "new": 0.23824481248810203,
+   "stored": 0.23824481248810203,
+   "diff": 0.0
+  },
+  "hangul_only": {
+   "new": 0.22391842848090326,
+   "stored": 0.22391842848090326,
+   "diff": 0.0
+  },
+  "met": true
+ },
+ "scoring_consistency": {
+  "applicable": true,
+  "dev_mix_all": {
+   "scored": 0.23824481248810203,
+   "recorded": 0.23824481248810203
+  },
+  "dev_h_hangul_only": {
+   "scored": 0.16089842608441532,
+   "recorded": 0.16089842608441532
+  },
+  "met": true
+ },
+ "metric": "CER_ns over all characters (digits and Latin letters count), ITN minus none",
+ "a_fleurs_train_digit": {
+  "utterances": 619,
+  "chars": 29778,
+  "none": {
+   "rate": 0.270165894284371,
+   "edits": 8045
+  },
+  "itn": {
+   "rate": 0.20538652696621668,
+   "edits": 6116
+  },
+  "diff": -0.06477936731815431,
+  "ci": [
+   -0.07064108160859142,
+   -0.059321345202372644
+  ],
+  "changed_utterances": 483,
+  "improved_utterances": 454,
+  "worsened_utterances": 17,
+  "sentences": 354,
+  "cluster_ci_sentence": [
+   -0.07154265444550363,
+   -0.05787879935150629
+  ]
+ },
+ "b_dev_mix_digit_half_b": {
+  "utterances": 33,
+  "chars": 1905,
+  "none": {
+   "rate": 0.3102362204724409,
+   "edits": 591
+  },
+  "itn": {
+   "rate": 0.241994750656168,
+   "edits": 461
+  },
+  "diff": -0.06824146981627294,
+  "ci": [
+   -0.09586623385353646,
+   -0.04273395967816389
+  ],
+  "changed_utterances": 23,
+  "improved_utterances": 23,
+  "worsened_utterances": 0,
+  "sentences": 23,
+  "cluster_ci_sentence": [
+   -0.10240299804917967,
+   -0.036586512175829485
+  ]
+ },
+ "dev_mix_digit_half_a_development": {
+  "utterances": 17,
+  "chars": 930,
+  "none": {
+   "rate": 0.3161290322580645,
+   "edits": 294
+  },
+  "itn": {
+   "rate": 0.24516129032258063,
+   "edits": 228
+  },
+  "diff": -0.07096774193548386,
+  "ci": [
+   -0.11071012751489591,
+   -0.03645113031914895
+  ],
+  "changed_utterances": 13,
+  "improved_utterances": 13,
+  "worsened_utterances": 0,
+  "sentences": 14,
+  "cluster_ci_sentence": [
+   -0.11701313423449251,
+   -0.03492134119707245
+  ]
+ },
+ "dev_mix_all": {
+  "utterances": 700,
+  "chars": 21012,
+  "none": {
+   "rate": 0.23824481248810203,
+   "edits": 5006
+  },
+  "itn": {
+   "rate": 0.23153436131734248,
+   "edits": 4865
+  },
+  "diff": -0.0067104511707595516,
+  "ci": [
+   -0.011575768807162785,
+   -0.002468169170217047
+  ],
+  "changed_utterances": 61,
+  "improved_utterances": 36,
+  "worsened_utterances": 23
+ },
+ "split": {
+  "rule": "SHA-256 of the utterance id (UTF-8): first byte even = A (rule development), odd = B (verdict)",
+  "dev_mix_digit": 50,
+  "half_a": 17,
+  "half_b": 33
+ },
+ "guard": {
+  "dev_mix_hangul_only": {
+   "utterances": 633,
+   "changed": 25,
+   "change_rate": 0.03949447077409163,
+   "reference_number_utterances": 25,
+   "number_free_utterances": 608,
+   "false_changes": 6,
+   "false_change_rate": 0.009868421052631578,
+   "cer_ns_hangul_only": {
+    "none": {
+     "rate": 0.22391842848090326,
+     "edits": 3887
+    },
+    "itn": {
+     "rate": 0.2270868137565528,
+     "edits": 3942
+    },
+    "diff": 0.0031683852756495268,
+    "ci": [
+     0.0018650979952236162,
+     0.004645018560227245
+    ]
+   }
+  },
+  "dev_h": {
+   "utterances": 1113,
+   "changed": 294,
+   "change_rate": 0.2641509433962264,
+   "reference_number_utterances": 341,
+   "number_free_utterances": 772,
+   "false_changes": 4,
+   "false_change_rate": 0.0051813471502590676,
+   "cer_ns_hangul_only": {
+    "none": {
+     "rate": 0.16089842608441532,
+     "edits": 7708
+    },
+    "itn": {
+     "rate": 0.18895336701039536,
+     "edits": 9052
+    },
+    "diff": 0.028054940925980043,
+    "ci": [
+     0.02486736451914693,
+     0.03154487407550392
+    ]
+   }
+  }
+ },
+ "verdict": {
+  "a_fleurs_train_digit": true,
+  "b_dev_mix_digit_half_b": true,
+  "guard_dev_mix_hangul_only": true,
+  "guard_dev_h": true,
+  "adopted": true,
+  "raw_change_guard": {
+   "dev_mix_hangul_only": false,
+   "dev_h": false
+  }
+ }
+}
