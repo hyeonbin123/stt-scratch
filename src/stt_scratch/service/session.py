@@ -15,6 +15,8 @@ final 이벤트가 세그먼트를 닫는다. 끝점은 인식 상태(greedy 상
                      모드로 한 번 더 디코딩해 확정 자막으로 쓴다(부분 자막은 그대로 320 ms 스트리밍 결과).
                      스트리밍 결과는 final 이벤트의 stream_text에 남는다.
   step_path          인코더 step 경로("eager" 측정에 쓴 원래 경로, "fast", "graph"; model/streaming.py).
+  word_confidence    True면(2차 패스 필요, 기본 끔) final 이벤트의 words에 확정 텍스트 어절마다 보정 확률을
+                     싣는다(docs/experiments.md 규칙 변경 28 측정에서 채택된 어절 신뢰도, confidence.py).
 """
 
 # [핵심 결정] (1) 버퍼를 다음 세그먼트로 넘기는 이유: 처음 구현은 버퍼까지 지워 끝점마다 다음 음성 약 300
@@ -34,6 +36,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
+# confidence: 어절 신뢰도 옵션의 어절 점수·Platt 보정(평가 도구와 같은 함수, 순수 numpy).
+from stt_scratch import confidence
 from stt_scratch.model.conformer import ChunkConformerCTC
 from stt_scratch.model.decode import GreedyState, greedy_batch
 from stt_scratch.model.features import FIRST_PACKET_EXTRA, HOP, N_MELS, LogMel, StreamingFbank
@@ -58,6 +62,11 @@ class Event:
     # 전 값)와 2차 패스 계산 시간(ms, 끝점 판정 뒤 확정 자막이 그만큼 늦게 나간다).
     stream_text: str | None = None
     final_pass_ms: float = 0.0
+    # 어절 신뢰도 옵션(word_confidence=True)을 켰을 때 final 이벤트에만 채운다: 확정 텍스트의 어절마다
+    # (텍스트, 보정 확률)과 그 계산 시간(ms). 계산은 2차 패스 forward 뒤에 따로 돌므로 final_pass_ms에 들지
+    # 않고, 확정 자막은 두 시간을 더한 만큼 늦게 나간다. 옵션을 끄면 None·0.0 그대로라 이벤트가 전과 같다.
+    words: list[tuple[str, float]] | None = None
+    confidence_ms: float = 0.0
 
 
 # 세션 전체의 청크당 인코더 계산 시간 기록. 서버는 flush 뒤 summary를 "stats" 메시지로 보내고, 6단계 측정은
@@ -86,9 +95,33 @@ class SessionStats:
         }
 
 
+# 어절 신뢰도 옵션의 계산. 2차 패스 로짓(유효 프레임만, (T, V))을 fp32로 바꿔 프레임마다 argmax·최대
+# log-prob·전체 어휘 분포의 엔트로피(확률이 0으로 넘친 항은 0으로 셈)를 구하고, confidence.word_confidences로
+# 어절마다 등록된 후보 점수와 Platt 보정 확률을 낸다. 프레임 통계는 측정 덤프(scripts/final_pass_dump.py
+# frame_stats)와 같은 식·같은 dtype(float32)이라, 같은 로짓이면 판정에 쓴 평가 도구와 같은 확률이 나온다
+# (tests/test_confidence.py가 덤프 세션의 통계로 계산한 값과 비교한다). 출력: [(어절, 확률)](토큰이 없으면 빈
+# 목록).
+@torch.no_grad()
+def word_confidences_from_logits(logits: torch.Tensor, vocab: Vocab) -> list[tuple[str, float]]:
+    """2차 패스 로짓 (T, V) → 확정 텍스트의 [(어절, 보정 확률)]."""
+    lf = logits.float()
+    argmax = lf.argmax(dim=-1)
+    lp = torch.log_softmax(lf, dim=-1)
+    p = lp.exp()
+    entropy = -torch.where(p > 0, p * lp, torch.zeros_like(lp)).sum(dim=-1)
+    max_logprob = lp.gather(-1, argmax[:, None])[:, 0]
+    return confidence.word_confidences(
+        argmax.cpu().numpy(),
+        max_logprob.cpu().numpy().astype(np.float32),
+        entropy.cpu().numpy().astype(np.float32),
+        vocab,
+    )
+
+
 # 스트리밍 인식 세션. 생성 인자: 모델·어휘·청크 설정(서비스는 ChunkSpec(8, 128)), LogMel, 끝점 설정, 끝점 뒤
 # 캐시 초기화 여부(이 클래스의 기본값은 True지만 서버는 6단계 선택대로 False를 넘긴다), amp(None이면 GPU에서만
-# fp16).
+# fp16), word_confidence(True면 final 이벤트에 어절 신뢰도; final_pass="full"이어야 하고 아니면 ValueError —
+# 신뢰도는 2차 패스 로짓에서 재고 보정했기 때문이다).
 # partial_interval_frames는 부분 자막 간격 옵션이지만, 지금 구현은 새 토큰이 있을 때만 partial을 내므로 실제
 # 동작에 영향이 없다(기본 0).
 class StreamSession:
@@ -105,9 +138,12 @@ class StreamSession:
         step_path: str = "eager",
         final_pass: str = "none",
         final_pass_bucket: int = 128,
+        word_confidence: bool = False,
     ) -> None:
         if final_pass not in ("none", "full"):
             raise ValueError("final_pass must be 'none' or 'full'")
+        if word_confidence and final_pass != "full":
+            raise ValueError("word_confidence needs final_pass='full' (it was calibrated on the final pass)")
         self.model = model
         self.vocab = vocab
         self.spec = spec
@@ -120,6 +156,12 @@ class StreamSession:
         # (인과 서브샘플링·어텐션 키 마스크·conv 입력 0; tests/test_final_pass.py).
         self.final_pass = final_pass
         self.final_pass_bucket = final_pass_bucket
+        # 어절 신뢰도 옵션. decode_full이 계산해 _pass_words에 두고 _close_event가 그 세그먼트의 final
+        # 이벤트에 붙인 뒤 비운다(예열의 decode_full이 남긴 값이 다른 세그먼트에 붙지 않게 닫을 때마다 먼저
+        # 비운다).
+        self.word_confidence = word_confidence
+        self._pass_words: list[tuple[str, float]] | None = None
+        self._pass_words_ms = 0.0
         self.fbank = StreamingFbank(logmel)
         self.endpointer = Endpointer(endpoint or EndpointConfig())
         self.reset_cache_on_endpoint = reset_cache_on_endpoint
@@ -223,14 +265,29 @@ class StreamSession:
 
     # 세그먼트를 닫는 이벤트를 만든다. 2차 패스를 끄면 전과 같다: 텍스트가 있으면 final, 없으면 endpoint(빈
     # 세그먼트를 닫는 끝점, 예: 앞쪽 묵음; 클라이언트는 무시해도 된다). 켜면 확정 텍스트는 2차 패스 결과이고
-    # (부분 자막을 대체한다), 그 결과가 비면 endpoint이며 스트리밍 텍스트는 stream_text에 남긴다.
+    # (부분 자막을 대체한다), 그 결과가 비면 endpoint이며 스트리밍 텍스트는 stream_text에 남긴다. 어절 신뢰도
+    # 옵션을 켰으면 final에만 그 2차 패스의 어절 신뢰도(words)와 계산 시간을 붙인다(endpoint에는 어절이 없다).
     def _close_event(self, text: str, rule: str, ms: float) -> Event:
         frames = self.segment_frames
         if self.final_pass == "full":
+            self._pass_words, self._pass_words_ms = None, 0.0
             final_text, pass_ms = self._final_pass_decode()
             kind = "final" if final_text.strip() else "endpoint"
             shown = final_text if kind == "final" else ""
-            return Event(kind, shown, self.segment, frames, rule, ms, stream_text=text, final_pass_ms=pass_ms)
+            words = self._pass_words if kind == "final" else None
+            self._pass_words = None
+            return Event(
+                kind,
+                shown,
+                self.segment,
+                frames,
+                rule,
+                ms,
+                stream_text=text,
+                final_pass_ms=pass_ms,
+                words=words,
+                confidence_ms=self._pass_words_ms if words is not None else 0.0,
+            )
         if text.strip():
             return Event("final", text, self.segment, frames, rule, ms)
         return Event("endpoint", "", self.segment, frames, rule, ms)
@@ -249,7 +306,8 @@ class StreamSession:
 
         세션 정밀도(GPU fp16 autocast)로 돌리고 (텍스트, 계산 ms)를 돌려준다. 시간은 앞뒤 GPU 동기화를 포함한
         모델 forward + greedy(argmax를 CPU로 가져오는 것까지)다. 길이는 final_pass_bucket 배수로 0을 덧붙이고
-        실제 길이를 frames로 넘기므로 덧붙인 프레임은 결과에 영향이 없다.
+        실제 길이를 frames로 넘기므로 덧붙인 프레임은 결과에 영향이 없다. 어절 신뢰도 옵션을 켰으면 그 시간을
+        잰 뒤 같은 로짓의 유효 프레임으로 어절 신뢰도를 계산해 _pass_words(·_pass_words_ms)에 둔다.
         """
         t = mel.shape[0]
         bucket = self.final_pass_bucket
@@ -265,7 +323,13 @@ class StreamSession:
         ids = greedy_batch(logits.float(), lengths)[0]
         if self.device.type == "cuda":
             torch.cuda.synchronize()
-        return self.vocab.decode(ids), (time.perf_counter() - t0) * 1000
+        text = self.vocab.decode(ids)
+        pass_ms = (time.perf_counter() - t0) * 1000
+        if self.word_confidence:
+            t1 = time.perf_counter()
+            self._pass_words = word_confidences_from_logits(logits[0, : int(lengths[0])], self.vocab)
+            self._pass_words_ms = (time.perf_counter() - t1) * 1000
+        return text, pass_ms
 
     # 클라이언트의 "flush"에 대응한다. 열린 세그먼트는 "eos" final로 닫고, 캐시·fbank를 모두 초기화한다.
     # 통계(stats)는 지우지 않아 서버가 세션 전체 요약을 보낼 수 있다. 부분 청크는 stats.chunks에 세지 않는다.

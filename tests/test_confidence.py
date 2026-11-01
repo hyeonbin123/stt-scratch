@@ -283,6 +283,59 @@ def test_dump_session_records_full_context_statistics() -> None:
         assert np.all(stats["entropy"] >= 0) and np.all(stats["entropy"] <= math.log(len(VOCAB)) + 1e-5)
 
 
+# 확인: 어절 신뢰도 옵션(word_confidence=True)을 켠 세션의 final 이벤트 words가, 같은 세그먼트에서 덤프가 남긴
+# 프레임 통계(측정에 쓴 frame_stats)에 평가 도구와 같은 계산(segment_words → word_score → platt_apply, 등록
+# 후보·계수)을 적용한 값과 정확히 같다. 어절 열은 확정 텍스트의 공백 분리와 같고, final이 아닌 이벤트에는
+# words가 없으며, 옵션을 켜도 이벤트의 나머지(종류·텍스트·규칙·stream_text)는 옵션을 끈 세션과 같다. 왜:
+# 서버가 보이는 확률은 측정에서 판정받은 정의(2차 패스 로짓의 프레임 통계 + 절반 A에서 고른 후보·Platt)와
+# 같아야 한다.
+def test_word_confidence_session_matches_the_dump_statistics() -> None:
+    fpd = dump_module()
+    model, logmel = tiny_model(), LogMel()
+    endpoint = EndpointConfig(rule1_s=1e9, rule2_s=0.3, rule3_s=1.0)
+    wav = torch.cat([noise_wav(1.3, 1), torch.zeros(16000), noise_wav(1.0, 2)])
+
+    def run(session):
+        events = []
+        for _pos, piece in fpd.packets(wav):
+            events.extend(session.push_samples(piece))
+        return events + session.flush()
+
+    kwargs = dict(spec=ChunkSpec(8, 64), logmel=logmel, endpoint=endpoint, reset_cache_on_endpoint=False)
+    plain = run(StreamSession(model, VOCAB, final_pass="full", **kwargs))
+    session = fpd.DumpSession(model, VOCAB, final_pass="full", word_confidence=True, top_k=4, **kwargs)
+    scored = run(session)
+    assert [(e.kind, e.text, e.segment, e.rule, e.stream_text) for e in scored] == [
+        (e.kind, e.text, e.segment, e.rule, e.stream_text) for e in plain
+    ]
+    assert all(e.words is None for e in plain)
+    assert all(e.words is None for e in scored if e.kind != "final")
+    finals = [e for e in scored if e.kind == "final"]
+    assert finals and all(e.words for e in finals)
+    captured = {rec["segment"]: rec["capture"] for rec in session.closed if rec["kind"] == "final"}
+    for event in finals:
+        stats = captured[event.segment]["stats"]
+        expected = conf.word_confidences(stats["argmax"], stats["max_logprob"], stats["entropy"], VOCAB)
+        assert event.words == expected
+        assert [w for w, _ in event.words] == event.text.split()
+        assert all(0.0 < p < 1.0 for _, p in event.words) and event.confidence_ms >= 0.0
+        words = conf.segment_words(stats["argmax"], stats["max_logprob"], stats["entropy"], VOCAB)
+        scores = np.array([conf.word_score(w, "entropy_mean") for w in words])
+        manual = conf.platt_apply(scores, conf.SERVICE_PLATT_A, conf.SERVICE_PLATT_B)
+        np.testing.assert_array_equal(np.array([p for _, p in event.words]), manual)
+
+
+# 확인: 서버 옵션이 쓰는 후보·Platt 계수(confidence.SERVICE_*)가 커밋된 측정 결과(reports/followup/
+# confidence.json의 절반 A 선택)와 같고, 그 결과의 판정이 채택이다. 왜: 계수를 손으로 옮겨 적었으므로 결과
+# 파일과 어긋나면(오타, 다시 잰 결과) 서버가 판정받지 않은 보정을 쓰게 된다.
+def test_service_confidence_constants_match_the_recorded_selection() -> None:
+    result = json.loads((REPO / "reports" / "followup" / "confidence.json").read_text(encoding="utf-8"))
+    selection = result["selection"]
+    assert selection["chosen"] == conf.SERVICE_CANDIDATE
+    assert (selection["platt"]["a"], selection["platt"]["b"]) == (conf.SERVICE_PLATT_A, conf.SERVICE_PLATT_B)
+    assert result["verdict"]["adopted"] is True and result["reproduction"]["met"] is True
+
+
 def utt(i: int, text: str, seconds: float = 1.5, hangul: bool = True) -> Utterance:
     return Utterance(id=f"cv/{i}", corpus="cv22", text=text, duration_s=seconds, hangul_only=hangul)
 

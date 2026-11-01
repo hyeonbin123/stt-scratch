@@ -24,6 +24,9 @@
 스트리밍 텍스트 = 부분 자막이 쌓인 값, 2차 패스가 바꾸기 전)가 더 붙는다. 2차 패스 결과가 비면 endpoint로
 닫히지만 그 stream_text는 비어 있지 않을 수 있다. 2차 패스를 끄면 stream_text 키가 없다(확정 텍스트가 곧
 스트리밍 텍스트).
+어절 신뢰도 옵션(--word-confidence, 기본 끔, 2차 패스 필요)을 켜면 final에만 "words"(확정 텍스트를 공백으로
+나눈 어절마다 {"w": 어절, "conf": 맞았을 확률의 보정 추정, 소수 넷째 자리})와 "confidence_ms"(그 계산 ms,
+final_pass_ms와 별도)가 더 붙는다(docs/experiments.md 규칙 변경 28 측정에서 채택, 서버 기본값은 그대로).
 텍스트 프레임 "flush"는 스트림을 마무리하고(마지막 부분 청크 + final), 이벤트들 뒤에 다음으로 답한다.
   {"type": "stats", "chunks": n, "compute_ms_p50": ..., "compute_ms_p90": ..., "compute_ms_max": ...}
 (세션 전체의 청크당 계산 시간). "reset"은 새 세션을 시작한다.
@@ -261,8 +264,10 @@ async def refuse(socket: WebSocket, code: int, reason: str) -> None:
 # simulated 가설과 비교하려면 그 텍스트가 따로 필요했다(docs/experiments.md 규칙 변경 27). 키를 더하기만
 # 하므로 기존 클라이언트(웹 페이지 포함)는 그대로 동작한다. 측정 클라이언트의 오프라인
 # 재생(scripts/stream_client.py --replay-check)도 이 함수로 직렬화해 서버와 같은 모양의 기록을 만든다.
+# words·confidence_ms는 어절 신뢰도 옵션을 켠 세션의 final 이벤트(words가 채워진 것)에만 넣는다: 확률은 화면
+# 표시용이라 소수 넷째 자리로 줄인다. 옵션을 끈 서버(기본)의 메시지는 전과 같다.
 def event_message(ev: Event) -> dict:
-    """Event를 서버가 보내는 JSON 객체(dict)로 바꾼다. stream_text는 값이 있을 때만 넣는다."""
+    """Event를 서버가 보내는 JSON 객체(dict)로 바꾼다. stream_text·words는 값이 있을 때만 넣는다."""
     message = {
         "type": ev.kind,
         "segment": ev.segment,
@@ -274,6 +279,9 @@ def event_message(ev: Event) -> dict:
     }
     if ev.stream_text is not None:
         message["stream_text"] = ev.stream_text
+    if ev.words is not None:
+        message["words"] = [{"w": word, "conf": round(prob, 4)} for word, prob in ev.words]
+        message["confidence_ms"] = round(ev.confidence_ms, 1)
     return message
 
 
@@ -293,7 +301,8 @@ def shown_path(path: Path) -> str:
 # max_frame_bytes = 바이너리 프레임 상한(넘으면 1009), max_sessions = 동시 세션 상한(넘으면 1013). 라이브러리
 # 기본값(eager·none)은 측정 도구용 원래 동작 그대로다. step 경로 auto의 장치별 값: 후속 측정 P3 판정(출력
 # 동일성 관문을 통과하고 같은 실행의 eager보다 청크 p90이 낮은 것 중 가장 빠른 것). GPU는 graph(43.0 ms <
-# eager 72.5 ms), CPU 1스레드는 fast(44.4 ms < 51.3 ms).
+# eager 72.5 ms), CPU 1스레드는 fast(44.4 ms < 51.3 ms). word_confidence(기본 False)는 final 이벤트의 어절
+# 신뢰도 옵션으로 final_pass="full"이 아니면 모델을 올리기 전에 ValueError다(신뢰도는 2차 패스에서 쟀다).
 AUTO_STEP_PATH = {"cuda": "graph", "cpu": "fast"}
 
 
@@ -318,9 +327,13 @@ def build_app(
     allowed_hosts: Sequence[str] | None = None,
     max_frame_bytes: int = MAX_FRAME_BYTES,
     max_sessions: int = MAX_SESSIONS,
+    word_confidence: bool = False,
 ) -> FastAPI:
-    # 허용 목록은 모델을 올리기 전에 검사해 잘못된 패턴이면 바로(첫 요청이 아니라) 실패하게 한다.
+    # 허용 목록은 모델을 올리기 전에 검사해 잘못된 패턴이면 바로(첫 요청이 아니라) 실패하게 한다. 어절 신뢰도
+    # 옵션도 같은 이유로 여기서 본다(warm=False면 세션을 첫 연결 때 처음 만들기 때문이다).
     hosts = check_allowed_hosts(DEFAULT_ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts)
+    if word_confidence and final_pass != "full":
+        raise ValueError("word_confidence needs final_pass='full' (it was calibrated on the final pass)")
     dev = torch.device(device)
     model, _ = load_model(checkpoint, dev)
     vocab_path = ROOT / "manifests" / "vocab.json"
@@ -334,9 +347,15 @@ def build_app(
     spec = ChunkSpec(chunk, left)
     use_amp = (dev.type == "cuda") if amp is None else amp
     step_path = resolve_step_path(step_path, device)
-    # 연결마다 같은 설정으로 세션을 만든다(step 경로·2차 패스는 7단계 뒤 후속 옵션, 규칙 변경 26). ws 처리기가
-    # 이 dict를 그대로 읽으므로 아래에서 step_path를 바꾸면 이후 연결에 바로 적용된다.
-    options = {"amp": use_amp, "step_path": step_path, "final_pass": final_pass}
+    # 연결마다 같은 설정으로 세션을 만든다(step 경로·2차 패스는 7단계 뒤 후속 옵션, 규칙 변경 26; 어절
+    # 신뢰도는 규칙 변경 28 측정 뒤 옵션). ws 처리기가 이 dict를 그대로 읽으므로 아래에서 step_path를 바꾸면
+    # 이후 연결에 바로 적용된다.
+    options = {
+        "amp": use_amp,
+        "step_path": step_path,
+        "final_pass": final_pass,
+        "word_confidence": word_confidence,
+    }
     # 예열(session.warm_up): 부분 청크 길이마다 한 번씩 flush해 첫 클라이언트가 새 텐서 모양의 1회성 준비
     # 시간을 겪지 않게 한다. 걸린 시간은 /info의 warm_up_s로 보인다.
     warm_s = (
@@ -387,10 +406,11 @@ def build_app(
         return response
 
     # /info 내용: 체크포인트와 그 SHA-256, 청크·좌측 문맥, 장치·정밀도, 끝점 설정, 캐시 정책, 실제 step 경로와
-    # CUDA Graph 캡처 상태, 2차 패스, 어휘 크기와 어휘 파일 SHA-256, torch 연산 스레드 수, 프레임·세션 상한,
-    # 예열 시간. 페이지가 설정을 표시하고, 측정 스크립트가 서버가 등록한 구성으로 떠 있는지 대조하며 결과
-    # 파일에 출처로 남긴다(규칙 변경 24, docs/ai-verification.md 6단계 검토 반영). 값은 앱을 만들 때 한 번
-    # 정한다(스레드 수는 main()이 모델을 올리기 전에 정하므로 예열·세션과 같은 값이다).
+    # CUDA Graph 캡처 상태, 2차 패스, 어절 신뢰도 옵션, 어휘 크기와 어휘 파일 SHA-256, torch 연산 스레드 수,
+    # 프레임·세션 상한, 예열 시간(페이지는 word_confidence가 true일 때만 밑줄 선택을 보인다). 페이지가 설정을
+    # 표시하고, 측정 스크립트가 서버가 등록한 구성으로 떠 있는지 대조하며 결과 파일에 출처로 남긴다(규칙 변경
+    # 24, docs/ai-verification.md 6단계 검토 반영). 값은 앱을 만들 때 한 번 정한다(스레드 수는 main()이 모델을
+    # 올리기 전에 정하므로 예열·세션과 같은 값이다).
     info = {
         "checkpoint": shown_path(checkpoint),
         "checkpoint_sha256": hashlib.sha256(Path(checkpoint).read_bytes()).hexdigest(),
@@ -405,6 +425,7 @@ def build_app(
         "graph_captured": graph_captured,
         "graph_failed": graph_failed,
         "final_pass": final_pass,
+        "word_confidence": word_confidence,
         "vocab": len(vocab),
         "vocab_sha256": hashlib.sha256(vocab_path.read_bytes()).hexdigest(),
         "cpu_threads": torch.get_num_threads(),
@@ -472,8 +493,9 @@ def build_app(
                 else:
                     events = []
                 # 이벤트마다 JSON 텍스트 프레임 하나(event_message: 종류, 세그먼트 번호, 텍스트, 규칙,
-                # 세그먼트 프레임 수, 계산 시간, 2차 패스 시간, 2차 패스를 켰으면 닫힘 이벤트의 stream_text).
-                # ensure_ascii=False로 한글을 그대로 보낸다.
+                # 세그먼트 프레임 수, 계산 시간, 2차 패스 시간, 2차 패스를 켰으면 닫힘 이벤트의 stream_text,
+                # 어절 신뢰도 옵션을 켰으면 final의 words·confidence_ms). ensure_ascii=False로 한글을 그대로
+                # 보낸다.
                 for ev in events:
                     await socket.send_text(json.dumps(event_message(ev), ensure_ascii=False))
                 if stats is not None:
@@ -547,6 +569,15 @@ def build_parser() -> argparse.ArgumentParser:
         "6단계까지의 1-pass 확정 자막",
     )
     p.add_argument(
+        "--word-confidence",
+        action="store_true",
+        help="final 이벤트에 확정 텍스트 어절마다의 신뢰도(words: [{w, conf}], conf = 그 어절이 맞았을 "
+        "확률의 Platt 보정 추정)를 더한다(기본 끔, --final-pass full 필요). dev 측정(docs/experiments.md "
+        "규칙 변경 28)에서 오류 어절 검출 AUROC 0.882·ECE 0.045로 채택됐다(ECE는 점추정으로만 충족). "
+        "보정은 GPU fp16 2차 패스로 맞췄다. 페이지는 이 옵션이 켜진 서버에서만 '신뢰도 낮은 어절에 밑줄' "
+        "선택을 보인다",
+    )
+    p.add_argument(
         "--threads",
         type=int,
         default=None,
@@ -559,16 +590,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-# 명령행 실행: 인자를 읽어 Host 허용 목록을 만들고(잘못된 패턴은 모델을 올리기 전에 거부), torch 연산 스레드
-# 수를 정하고(--threads, CPU 장치 기본 1), 인증 없는 서버를 루프백 밖에 열거나 Host 검사를 끄면 경고를 남긴
-# 뒤, 앱을 만들어 uvicorn으로 띄운다. uvicorn에는 WebSocket
-# 메시지 상한(ws_max_size = MAX_FRAME_BYTES, 넘으면 전송 계층이 오류 줄 없이 1009로 닫음)과 동시 연결·작업
-# 상한(limit_concurrency, 넘으면 새 HTTP 요청에 503)을 함께 넘긴다. ping 간격·시간 제한은 uvicorn 기본(20 s)
-# 그대로다. 경고는 uvicorn이 로깅을 설정하기 전에 나가므로 파이썬 기본 처리기(stderr)가 찍는다.
+# 명령행 실행: 인자를 읽어 옵션 조합(--word-confidence는 --final-pass full에서만)과 Host 허용 목록을 검사하고
+# (잘못된 조합·패턴은 모델을 올리기 전에 거부), torch 연산 스레드 수를 정하고(--threads, CPU 장치 기본 1),
+# 인증 없는 서버를 루프백 밖에 열거나 Host 검사를 끄면 경고를 남긴 뒤, 앱을 만들어 uvicorn으로 띄운다.
+# uvicorn에는 WebSocket 메시지 상한(ws_max_size = MAX_FRAME_BYTES, 넘으면 전송 계층이 오류 줄 없이 1009로
+# 닫음)과 동시 연결·작업 상한(limit_concurrency, 넘으면 새 HTTP 요청에 503)을 함께 넘긴다. ping 간격·시간
+# 제한은 uvicorn 기본(20 s) 그대로다. 경고는 uvicorn이 로깅을 설정하기 전에 나가므로 파이썬 기본
+# 처리기(stderr)가 찍는다.
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if not args.checkpoint:
         raise SystemExit("--checkpoint (or STT_CHECKPOINT) is required")
+    # 어절 신뢰도는 2차 패스 로짓에서 재고 보정했으므로 2차 패스를 끈 서버에서는 켜지 않는다(모델을 올리기
+    # 전에 멈춘다).
+    if args.word_confidence and args.final_pass != "full":
+        raise SystemExit("--word-confidence needs --final-pass full")
     try:
         allowed = check_allowed_hosts(allowed_hosts_for(args.host, args.allowed_host))
     except ValueError as e:
@@ -610,6 +646,7 @@ def main(argv: list[str] | None = None) -> None:
         step_path=args.step_path,
         final_pass=args.final_pass,
         allowed_hosts=allowed,
+        word_confidence=args.word_confidence,
     )
     uvicorn.run(
         app,

@@ -3,8 +3,9 @@
 <!-- 마이크 클라이언트. 마이크 음성을 16 kHz int16 PCM으로 320 ms마다 WebSocket에 보내고, 서버가 돌려주는 -->
 <!-- 부분 자막(잠정)과 끝점에서 확정된 세그먼트(서버 기본값에서는 같은 모델의 전체 문맥 2차 패스 결과)를 -->
 <!-- 보여 준다. -->
-<!-- [구조] 스타일(밝은·어두운 색 변수) → 조작 줄(시작·멈춤·상태) → 자막 상자(확정 텍스트 + 진행 중 잠정 -->
-<!-- 자막) → 측정 표(서버 설정, 보낸 청크 수, 부분 자막 지연, 세그먼트 수, 청크당 계산 시간) → 안내 → 스크립트. -->
+<!-- [구조] 스타일(밝은·어두운 색 변수) → 조작 줄(시작·멈춤·상태, 서버가 어절 신뢰도를 보낼 때만 보이는 밑줄 -->
+<!-- 선택) → 자막 상자(확정 텍스트 + 진행 중 잠정 자막) → 측정 표(서버 설정, 보낸 청크 수, 부분 자막 지연, -->
+<!-- 세그먼트 수, 청크당 계산 시간) → 안내 → 스크립트. -->
 <!-- [보안] 서버가 이 파일의 인라인 스크립트·스타일 블록의 SHA-256 해시만 허용하는 CSP를 붙인다. 해시는 -->
 <!-- 서버 시작 때 이 파일에서 계산하므로 내용을 고쳐도 서버만 다시 띄우면 된다. 인라인 style 속성은 CSP가 -->
 <!-- 막으므로 쓰지 않고(class만), 인라인 스크립트·스타일 블록의 여는 태그에도 속성을 붙이지 않는다(서버는 속성 -->
@@ -19,12 +20,12 @@
 <title>stt-scratch 스트리밍 자막</title>
 <!-- 스타일 구역: 색은 CSS 변수로 모아 두고 운영체제의 어두운 모드에 맞춰 바꾼다. -->
 <style>
-  /* 밝은 화면 색 변수: 배경, 글자, 보조 글자, 강조(버튼), 자막 상자 배경. */
-  :root { --bg: #ffffff; --fg: #1a1a1a; --muted: #6b6b6b; --accent: #1a4fa0; --box: #f4f4f4; }
+  /* 밝은 화면 색 변수: 배경, 글자, 보조 글자, 강조(버튼), 자막 상자 배경, 신뢰도 낮은 어절의 밑줄. */
+  :root { --bg: #ffffff; --fg: #1a1a1a; --muted: #6b6b6b; --accent: #1a4fa0; --box: #f4f4f4; --warn: #c0392b; }
   /* 운영체제가 어두운 모드면 같은 변수를 어두운 색으로 덮어쓴다(규칙들은 변수만 참조하므로 다른 곳은 바꿀 */
   /* 필요가 없다). */
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #121212; --fg: #ececec; --muted: #9a9a9a; --accent: #7aa7ff; --box: #1e1e1e; }
+    :root { --bg: #121212; --fg: #ececec; --muted: #9a9a9a; --accent: #7aa7ff; --box: #1e1e1e; --warn: #ff8a80; }
   }
   /* 기본 글꼴은 시스템 글꼴, 없으면 Windows 한글 글꼴(맑은 고딕). */
   body { margin: 0; padding: 16px; font-family: system-ui, "Malgun Gothic", sans-serif; background: var(--bg); color: var(--fg); }
@@ -39,6 +40,8 @@
   /* 잠정(부분) 자막: 320 ms 스트리밍 결과라 끝점 뒤 2차 패스가 고쳐 쓸 수 있어 흐린 색·기울임으로 '확정 전'임을 */
   /* 보인다. CSP가 인라인 style 속성을 막으므로 클래스로 둔다. */
   .provisional { color: var(--muted); font-style: italic; }
+  /* 신뢰도 낮은 확정 어절(서버 --word-confidence + 밑줄 선택): 보정 확률이 임계 미만인 어절에 물결 밑줄. */
+  .lowconf { text-decoration: underline wavy var(--warn); text-underline-offset: 3px; }
   .meta { color: var(--muted); font-size: 13px; }
   table { border-collapse: collapse; font-size: 13px; }
   td { padding: 2px 10px 2px 0; }
@@ -50,11 +53,13 @@
 <body>
 <h1>stt-scratch 스트리밍 자막 (로컬 데모)</h1>
 <!-- 조작 줄: 마이크 시작(WebSocket 연결 → 마이크 권한 요청 → 전송 시작), 멈춤(남은 음성 전송 → flush → -->
-<!-- 응답을 받은 뒤 연결 종료), 상태 표시(연결 중·듣는 중·멈춤, 실패·끊김은 사유와 함께). -->
+<!-- 응답을 받은 뒤 연결 종료), 상태 표시(연결 중·듣는 중·멈춤, 실패·끊김은 사유와 함께), 밑줄 선택(서버 /info의 -->
+<!-- word_confidence가 true일 때만 보이고 기본은 꺼짐; 켜면 그 뒤 확정 자막의 신뢰도 낮은 어절에 밑줄). -->
 <div class="row">
   <button id="start">마이크 시작</button>
   <button id="stop" disabled>멈춤</button>
   <span class="meta" id="status">대기</span>
+  <label class="meta" id="confopt" hidden><input type="checkbox" id="underline"> 신뢰도 낮은 어절에 밑줄</label>
 </div>
 <!-- 자막 상자: 첫 텍스트 노드에 확정된 세그먼트들을 쌓고(스크립트가 만든다), 그 뒤 span에 지금 열린 -->
 <!-- 세그먼트의 잠정 자막을 보여 준다. -->
@@ -76,9 +81,15 @@
 // 더 보내야 서버 log-mel이 패킷마다 정확히 32프레임(청크 하나)을 만든다(docs/experiments.md 규칙 변경 9).
 const CHUNK_MS = 320, RATE = 16000, CHUNK_SAMPLES = RATE * CHUNK_MS / 1000;
 const FIRST_SAMPLES = CHUNK_SAMPLES + 240; // 첫 패킷만 프레임 창 하나만큼(240표본)을 더 싣는다
+// 밑줄 임계: 서버가 final의 words에 싣는 어절 신뢰도(그 어절이 맞았을 확률의 보정 추정)가 이보다 작으면 밑줄을
+// 긋는다. 어절 신뢰도 측정(docs/experiments.md 규칙 변경 28)이 밑줄 비율·정밀도·재현율을 보고한 τ와 같다.
+const UNDERLINE_TAU = 0.5;
 const $ = id => document.getElementById(id);
 // 화면 상태(페이지 수명 동안 누적): 보낸 패킷 수, 확정 세그먼트 수, 확정 텍스트, 잠정 자막을 마지막으로 쓴 연결.
 let sentChunks = 0, segments = 0, committed = "", partialOwner = null;
+// 밑줄로 그린 확정 세그먼트가 한 번이라도 자막 상자에 들어갔는지. 그 뒤의 세그먼트는 순서를 지키려고 첫 텍스트
+// 노드가 아니라 잠정 자막 앞에 따로 붙인다(appendFinal). 밑줄을 쓰지 않으면 끝까지 false라 표시가 전과 같다.
+let richCaptions = false;
 // 지금 연결(시작 ~ 멈춤·실패·끊김 사이) 하나. 연결마다의 자원(WebSocket, AudioContext, 소스·worklet 노드, 마이크
 // 스트림, 송신 시각, 닫기 타이머)은 그 연결 객체 s에 묶어 두고, 모든 콜백·타이머가 전역이 아니라 자기 s를 쓴다.
 // 왜: 전역 하나씩이던 때는 멈춤 뒤 1.5 s 닫기 타이머가 '그 시점의 전역 ws'(다시 시작한 새 연결)를 닫았고, 이전
@@ -91,12 +102,14 @@ $("final").insertBefore(committedNode, $("partial"));
 function setStatus(text) { $("status").textContent = text; }
 
 // 페이지를 열 때 GET /info로 서버 설정(청크 길이, 좌측 문맥, 장치, rule2 묵음 시간, 2차 패스, step 경로)을 받아
-// 표에 보여 준다. 실패해도 페이지는 그대로 쓸 수 있다.
+// 표에 보여 준다. 서버가 어절 신뢰도 옵션(word_confidence)을 켰으면 설정 줄에 그 사실을 더하고 밑줄 선택을
+// 보인다(선택 자체는 꺼진 채로 둔다). 실패해도 페이지는 그대로 쓸 수 있다.
 async function loadInfo() {
   try {
     const r = await fetch("/info"); const j = await r.json();
     $("info").textContent = `청크 ${j.chunk_ms} ms, 좌측 ${j.left_frames}프레임, ${j.device}, 끝점 rule2 ${j.endpoint.rule2_s}s, `
-      + `2차 패스 ${j.final_pass}, step ${j.step_path}`;
+      + `2차 패스 ${j.final_pass}, step ${j.step_path}` + (j.word_confidence === true ? ", 어절 신뢰도" : "");
+    if (j.word_confidence === true) $("confopt").hidden = false;
   } catch (e) {}
 }
 loadInfo();
@@ -212,10 +225,36 @@ async function startAudio(s) {
   }
 }
 
+// 확정 세그먼트 하나를 자막 상자에 붙인다. 기본(밑줄을 고르지 않았거나 final에 words가 없음)은 전과 같이 첫
+// 텍스트 노드(committedNode)에 줄을 바꿔 이어 쓴다. 밑줄을 골랐고 서버가 어절 신뢰도(words: [{w, conf}],
+// --word-confidence)를 보냈으면 어절마다 span을 만들고 conf가 UNDERLINE_TAU 미만인 어절에 lowconf 클래스(물결
+// 밑줄)와 확률 툴팁(title)을 단다. 어절은 공백 하나로 잇는다(확정 텍스트를 공백으로 나눈 열과 같다). 한 번 span으로
+// 그린 뒤에는(richCaptions) 그 뒤 세그먼트도 잠정 자막 앞에 따로 붙여 순서를 지킨다(첫 텍스트 노드에는 그 앞
+// 세그먼트만 남는다). 글자는 textContent·텍스트 노드로만 넣으므로 서버 텍스트가 HTML로 해석되지 않는다.
+function appendFinal(m) {
+  const words = $("underline").checked && Array.isArray(m.words) ? m.words : null;
+  const text = m.text;
+  committed += (committed ? "\n" : "") + text;
+  if (!words && !richCaptions) { committedNode.nodeValue = committed + "\n"; return; }
+  richCaptions = true;
+  const box = $("final"), before = $("partial");
+  if (!words) { box.insertBefore(document.createTextNode(text + "\n"), before); return; }
+  words.forEach((w, i) => {
+    if (i) box.insertBefore(document.createTextNode(" "), before);
+    const span = document.createElement("span");
+    span.textContent = String(w.w);
+    if (typeof w.conf === "number" && w.conf < UNDERLINE_TAU) {
+      span.className = "lowconf"; span.title = `신뢰도 ${w.conf.toFixed(2)}`;
+    }
+    box.insertBefore(span, before);
+  });
+  box.insertBefore(document.createTextNode("\n"), before);
+}
+
 // 서버 이벤트 처리. partial: 지금 연결의 것만 잠정 자막으로 보이고 지연을 표시한다(멈춘 연결의 늦은 부분 자막이
-// 새 연결의 자막을 덮지 않게). final: 확정 텍스트에 줄을 바꿔 덧붙이고 세그먼트 수를 올린다. endpoint(빈
-// 세그먼트를 닫은 끝점. 2차 패스를 켰으면 2차 패스 결과가 비었다는 뜻): 보여 줄 텍스트는 없지만, 그 연결이 쓴
-// 잠정 자막은 확정되지 않은 것이므로 지운다. final도 같은 연결의 잠정 자막을 지운다. stats: flush 뒤 세션 전체의
+// 새 연결의 자막을 덮지 않게). final: 확정 텍스트에 줄을 바꿔 덧붙이고(appendFinal; 밑줄을 골랐으면 어절별로)
+// 세그먼트 수를 올린다. endpoint(빈 세그먼트를 닫은 끝점. 2차 패스를 켰으면 2차 패스 결과가 비었다는 뜻): 보여 줄
+// 텍스트는 없지만, 그 연결이 쓴 잠정 자막은 확정되지 않은 것이므로 지운다. final도 같은 연결의 잠정 자막을 지운다. stats: flush 뒤 세션 전체의
 // 청크당 계산 시간. 멈춘 연결(flushed)이면 멈춤의 마지막 응답이므로 1.5 s를 기다리지 않고 바로 닫는다. error:
 // 서버가 이 줄 뒤 같은 코드로 닫으므로 사유를 기억해 두고 onclose에서 보인다.
 function handleMessage(s, ev) {
@@ -228,7 +267,7 @@ function handleMessage(s, ev) {
   } else if (m.type === "final" || m.type === "endpoint") {
     if (partialOwner === s) { $("partial").textContent = ""; partialOwner = null; }
     if (m.type === "final") {
-      committed += (committed ? "\n" : "") + m.text; committedNode.nodeValue = committed + "\n";
+      appendFinal(m);
       segments += 1; $("seg").textContent = segments;
     }
   } else if (m.type === "stats") {

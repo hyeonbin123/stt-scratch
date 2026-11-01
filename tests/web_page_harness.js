@@ -22,9 +22,12 @@
 //          연결 실패(onerror 뒤 onclose), {"op": "server_close", "socket": i, "code": c, "reason": r} 서버가 닫음,
 //          {"op": "message", "socket": i, "data": {...}} 서버 메시지(JSON), {"op": "packet", "samples": n} worklet이
 //          n표본 패킷을 메인 스레드로 넘김, {"op": "advance", "ms": t} 가상 시계 전진, {"op": "snapshot",
-//          "label": s} 지금 관찰값을 이름 붙여 저장. socket 생략·음수는 마지막 소켓(-1)부터 센다.
+//          "label": s} 지금 관찰값을 이름 붙여 저장, {"op": "check", "id": "underline", "checked": true} 사용자가
+//          체크 상자를 바꿈(밑줄 선택). socket 생략·음수는 마지막 소켓(-1)부터 센다.
 // [출력] {"final": <관찰값>, "snapshots": {label: <관찰값>}, "log": [...]}. 관찰값: now, start_disabled,
-//   stop_disabled, status, info, sent, lat, seg, stats, partial, committed(확정 텍스트), sockets[{url, readyState,
+//   stop_disabled, status, info, sent, lat, seg, stats, partial, committed(확정 텍스트: 자막 상자에서 잠정 자막을 뺀
+//   텍스트 노드·span의 글자를 순서대로 이은 것), underlined(밑줄 클래스 lowconf가 붙은 span의 글자 목록),
+//   underline_titles(그 span들의 title), confopt_hidden(밑줄 선택이 숨겨져 있는지), sockets[{url, readyState,
 //   sent(문자열 또는 {bytes}), closedByClient, closeCode}], contexts[{sampleRate, state}], tracks["live"|"ended"],
 //   nodes[{kind, connected, drains}], unhandled[처리되지 않은 예외·거부 문자열].
 "use strict";
@@ -48,6 +51,7 @@ const DEFAULT_INFO = {
   reset_cache_on_endpoint: false,
   step_path: "fast",
   final_pass: "full",
+  word_confidence: false,
   vocab: 2000,
   warm_up_s: 1.0,
 };
@@ -155,9 +159,14 @@ function makeEnvironment(options) {
       return node;
     },
   };
+  // 밑줄 선택: 체크 상자(처음엔 꺼짐)와 그것을 감싼 label(HTML의 hidden 속성처럼 처음엔 숨김).
+  el.underline = { id: "underline", checked: false };
+  el.confopt = { id: "confopt", hidden: true };
+  // createElement는 페이지가 쓰는 span만 흉내 낸다(nodeType 1, textContent·className·title을 그대로 담는 객체).
   const document = {
     getElementById: id => el[id] || null,
     createTextNode: value => ({ nodeType: 3, nodeValue: String(value) }),
+    createElement: tag => ({ nodeType: 1, tagName: String(tag).toUpperCase(), textContent: "", className: "", title: "" }),
   };
 
   // --- 가짜 WebSocket: readyState 0(연결 중)·1(열림)·2(닫는 중)·3(닫힘), 보낸 것 기록, 종료는 비동기 -----------
@@ -426,7 +435,13 @@ function makeEnvironment(options) {
       seg: el.seg.textContent,
       stats: el.stats.textContent,
       partial: el.partial.textContent,
-      committed: el.final.childNodes.filter(n => n !== el.partial).map(n => (n.nodeValue == null ? "" : n.nodeValue)).join(""),
+      committed: el.final.childNodes
+        .filter(n => n !== el.partial)
+        .map(n => (n.nodeType === 1 ? String(n.textContent) : n.nodeValue == null ? "" : n.nodeValue))
+        .join(""),
+      underlined: el.final.childNodes.filter(n => n.nodeType === 1 && n.className === "lowconf").map(n => n.textContent),
+      underline_titles: el.final.childNodes.filter(n => n.nodeType === 1 && n.className === "lowconf").map(n => n.title),
+      confopt_hidden: el.confopt.hidden,
       sockets: sockets.map(w => ({
         url: w.url,
         readyState: w.readyState,
@@ -472,6 +487,11 @@ function makeEnvironment(options) {
           break;
         case "snapshot":
           snapshots[step.label || String(Object.keys(snapshots).length)] = snapshot();
+          break;
+        case "check":
+          if (!el[step.id] || !("checked" in el[step.id])) throw new Error(`no checkbox #${step.id}`);
+          el[step.id].checked = Boolean(step.checked);
+          await settle();
           break;
         default:
           throw new Error(`unknown step op: ${JSON.stringify(step.op)}`);

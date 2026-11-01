@@ -9,7 +9,9 @@
 보내지 않고 정리, (5) endpoint 이벤트가 잠정(부분) 자막을 비우고 멈춘 연결의 늦은 부분 자막이 새 연결의
 자막을 덮지 않음, (6) 서버의 오류 줄과 종료 코드가 상태 줄에 보이고 권한 창이 떠 있는 동안 끊긴 연결도
 마이크를 바로 놓음, (7) flush 뒤 stats가 오면 1.5 s를 기다리지 않고 닫음, (8) /info 줄에 2차 패스·step
-경로, 안내 문구, 잠정 자막 표시(class), CSP 호환(인라인 블록 하나씩, style 속성 없음).
+경로, 안내 문구, 잠정 자막 표시(class), CSP 호환(인라인 블록 하나씩, style 속성 없음), (9) 어절 신뢰도
+밑줄 선택: 서버 /info가 word_confidence를 알릴 때만 보이고, 고르기 전과 기본 서버에서는 확정 자막 표시가 전과
+같으며, 고른 뒤에는 보정 확률이 임계(측정의 τ와 같은 0.5) 미만인 어절에만 밑줄이 붙고 세그먼트 순서가 지켜짐.
 """
 
 # [방식] Node.js(node)가 PATH에 없으면 하네스 테스트는 건너뛴다(CI의 ubuntu-24.04 러너에는 있다). 가짜
@@ -20,10 +22,12 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -103,6 +107,14 @@ def final(text: str, segment: int = 0, rule: str = "rule2") -> dict:
 
 def endpoint(segment: int = 0, rule: str = "rule2") -> dict:
     return {"type": "endpoint", "segment": segment, "text": "", "rule": rule, "frames": 40, "compute_ms": 5.0}
+
+
+# 어절 신뢰도 옵션(서버 --word-confidence)을 켠 서버의 final: 확정 텍스트의 어절마다 {w, conf}와 계산 시간.
+def final_words(text: str, confs: list[float], segment: int = 0) -> dict:
+    message = final(text, segment)
+    message["words"] = [{"w": w, "conf": c} for w, c in zip(text.split(), confs, strict=True)]
+    message["confidence_ms"] = 0.4
+    return message
 
 
 def stats(chunks: int = 3) -> dict:
@@ -357,8 +369,53 @@ def test_info_line_shows_the_second_pass_and_step_path() -> None:
     }
     end = run_page([], info=info)["final"]
     assert "2차 패스 full" in end["info"] and "graph" in end["info"] and "320 ms" in end["info"], end["info"]
+    assert "어절 신뢰도" not in end["info"] and end["confopt_hidden"]  # 옵션을 알리지 않는 서버(기본)
     failed = run_page([], infoFails=True)["final"]
-    assert failed["info"] == "-" and failed["unhandled"] == []
+    assert failed["info"] == "-" and failed["unhandled"] == [] and failed["confopt_hidden"]
+
+
+# 확인: 서버가 어절 신뢰도 옵션을 알리지 않으면(기본 서버: word_confidence false) 밑줄 선택은 숨겨진 채이고,
+# final에 words가 있어도 확정 자막은 전과 같은 텍스트 한 줄이다(밑줄 없음). 알리면 설정 줄에 '어절 신뢰도'가
+# 붙고 선택이 보이지만 고르기 전에는 여전히 밑줄이 없다. 고른 뒤의 final은 보정 확률이 0.5 미만인 어절(0.5는
+# 아님)에만 밑줄과 확률 툴팁이 붙고, 그 뒤 words 없는 final도 순서대로 이어지며, 확정 텍스트 전체는 받은
+# 순서의 세그먼트를 줄로 이은 것과 같다. 왜: 측정(규칙 변경 28)은 화면 밑줄을 '옵션'으로만 채택했고 기본 화면
+# 표시는 사용자 결정이라, 기본 상태의 표시는 바뀌지 않아야 한다.
+@needs_node
+def test_underline_option_marks_low_confidence_words_only_when_chosen() -> None:
+    steps = [
+        start(),
+        open_socket(0),
+        message(final_words("가나 다라", [0.9, 0.2]), 0),
+        snap("before"),
+    ]
+    plain = run_page(steps)["snapshots"]["before"]
+    assert plain["confopt_hidden"] and plain["committed"] == "가나 다라\n" and plain["underlined"] == []
+    info = {
+        "chunk_ms": 320,
+        "left_frames": 128,
+        "device": "cuda",
+        "endpoint": {"rule2_s": 0.8},
+        "final_pass": "full",
+        "step_path": "graph",
+        "word_confidence": True,
+    }
+    out = run_page(
+        steps
+        + [
+            {"op": "check", "id": "underline", "checked": True},
+            message(final_words("마가 나다 라마", [0.3, 0.5, 0.0001], 1), 0),
+            message(final("가가", 2), 0),
+            snap("after"),
+        ],
+        info=info,
+    )
+    before, after = out["snapshots"]["before"], out["snapshots"]["after"]
+    assert not before["confopt_hidden"] and "어절 신뢰도" in before["info"], before["info"]
+    assert before["committed"] == "가나 다라\n" and before["underlined"] == []
+    assert after["committed"] == "가나 다라\n마가 나다 라마\n가가\n" and after["seg"] == "3"
+    assert after["underlined"] == ["마가", "라마"]
+    assert after["underline_titles"] == ["신뢰도 0.30", "신뢰도 0.00"]
+    assert out["final"]["unhandled"] == []
 
 
 # 확인(Node 없이): 잠정 자막 span에 class가 있고 그 클래스의 CSS 규칙이 있으며(인라인 style 속성 금지), 안내
@@ -369,6 +426,20 @@ def test_page_marks_provisional_captions_and_explains_the_second_pass() -> None:
     assert re.search(r"\.provisional\s*\{[^}]*font-style:\s*italic", html)
     guide = re.search(r'<p class="meta">(.*?)</p>', html, re.S)
     assert guide and "2차 패스" in guide.group(1) and "덧붙" in guide.group(1) and "확정" in guide.group(1)
+
+
+# 확인(Node 없이): 페이지의 밑줄 임계(UNDERLINE_TAU)가 어절 신뢰도 평가 도구가 밑줄 비율·정밀도·재현율을
+# 보고한 임계(scripts/confidence_eval.py TAU)와 같고, 밑줄 선택은 기본으로 숨겨져 있으며 체크 상자는 꺼진 채로
+# 시작한다 (기본 화면 표시는 그대로; 서버가 옵션을 알릴 때만 페이지 스크립트가 보인다).
+def test_page_underline_threshold_matches_the_measurement() -> None:
+    scripts = str(ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    confidence_eval = importlib.import_module("confidence_eval")
+    html = WEB.read_text(encoding="utf-8")
+    tau = re.search(r"const UNDERLINE_TAU = ([0-9.]+);", html)
+    assert tau and float(tau.group(1)) == confidence_eval.TAU
+    assert re.search(r'<label class="meta" id="confopt" hidden><input type="checkbox" id="underline">', html)
 
 
 # 확인(Node 없이): 서버의 CSP 해시 계산(server.page_csp)이 찾는 속성 없는 <script>·<style> 블록이 하나씩만

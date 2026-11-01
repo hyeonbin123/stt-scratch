@@ -5,7 +5,8 @@
 검사, Host 허용 목록(DNS 리바인딩 방어), WebSocket 입력·자원 상한(홀수 바이트 프레임, 큰 프레임, 동시 세션
 수), 명령행 실행이 uvicorn에 넘기는 전송 상한과 경고, CSP 해시, 서버 예열, 서버 상태 보고(/info의 어휘
 SHA-256·torch 스레드 수·CUDA Graph 캡처 상태, 캡처 실패 시 fast 폴백), 어휘 크기 검사, CPU 장치의 기본
-1스레드, 2차 패스를 켰을 때만 확정 이벤트에 붙는 stream_text.
+1스레드, 2차 패스를 켰을 때만 확정 이벤트에 붙는 stream_text, 어절 신뢰도 옵션(켰을 때만 final에 words가
+붙고 인식 결과는 그대로, 2차 패스 없이는 켜지 않음).
 """
 
 # [방식] 작은 모델(d=32, 2층)과 8토큰 어휘로 CPU에서 돌린다. 서버는 실제 포트에 띄우지 않고 FastAPI
@@ -489,6 +490,69 @@ def test_close_events_carry_stream_text_only_with_the_final_pass(tmp_path) -> No
     assert all("stream_text" not in m for m in got_none)
     streamed = " ".join(m["stream_text"] for m in closes if m["stream_text"].strip())
     assert streamed and streamed == " ".join(m["text"] for m in got_none if m["type"] == "final")
+
+
+# 확인: 어절 신뢰도 옵션(word_confidence)을 켠 서버는 final 이벤트에만 words(확정 텍스트를 공백으로 나눈
+# 어절마다 {w, conf}, conf는 0~1)와 confidence_ms를 붙이고 partial·endpoint에는 붙이지 않으며, /info에 옵션이
+# 보인다. 옵션을 끈 서버(기본)의 메시지에는 두 키가 없고, 두 서버의 이벤트에서 두 키를 빼면 같다(옵션이 인식
+# 결과를 바꾸지 않음). 왜: 측정(docs/experiments.md 규칙 변경 28)은 이 필드를 '옵션'으로만 채택했고 서버
+# 기본값은 그대로여야 한다. 확률 값 자체가 측정 정의와 같은지는 tests/test_confidence.py가 덤프 세션과
+# 비교한다.
+def test_word_confidence_option_adds_words_to_final_events_only(tmp_path) -> None:
+    hosts = ["testserver"]
+    kwargs = dict(warm=False, step_path="fast", final_pass="full", allowed_hosts=hosts)
+    on = TestClient(make_app(tmp_path, word_confidence=True, **kwargs))
+    off = TestClient(make_app(tmp_path, **kwargs))
+    assert on.get("/info").json()["word_confidence"] is True
+    assert off.get("/info").json()["word_confidence"] is False
+    g = torch.Generator().manual_seed(4)
+    pcm = (torch.randn(3 * 16000, generator=g) * 2000).to(torch.int16).numpy().tobytes()
+
+    def stream(client: TestClient) -> list[dict]:
+        with client.websocket_connect("/ws") as ws:
+            for i in range(0, len(pcm), 10240):
+                ws.send_bytes(pcm[i : i + 10240])
+            ws.send_text("flush")
+            return read_until_stats(ws)
+
+    got_on, got_off = stream(on), stream(off)
+    finals = [m for m in got_on if m["type"] == "final"]
+    assert finals
+    for m in finals:
+        assert [w["w"] for w in m["words"]] == m["text"].split()
+        assert all(0.0 <= w["conf"] <= 1.0 for w in m["words"]) and m["confidence_ms"] >= 0.0
+    assert all("words" not in m and "confidence_ms" not in m for m in got_on if m["type"] != "final")
+    assert all("words" not in m and "confidence_ms" not in m for m in got_off)
+
+    # 시간 값(이름에 ms가 든 키: compute_ms·final_pass_ms·confidence_ms·stats의 백분위)과 words를 빼고
+    # 비교한다.
+    def same_part(got: list[dict]) -> list[dict]:
+        return [{k: v for k, v in m.items() if k != "words" and "ms" not in k} for m in got]
+
+    assert same_part(got_on) == same_part(got_off)
+
+
+# 확인: 어절 신뢰도 옵션은 2차 패스가 있어야 한다. 세션(StreamSession)과 앱(build_app, 모델을 올리기 전)은
+# final_pass none과 함께 주면 ValueError, 명령행은 --final-pass none과 함께 주면 SystemExit로 멈추고, 명령행
+# 기본은 끔이며 --word-confidence를 주면 build_app에 그대로 넘긴다. 왜: 신뢰도와 보정은 2차 패스 로짓에서
+# 쟀으므로 1-pass 확정 자막에 같은 확률을 붙이면 측정되지 않은 값이 된다.
+def test_word_confidence_needs_the_final_pass(tmp_path, monkeypatch) -> None:
+    from stt_scratch.service import server
+
+    with pytest.raises(ValueError, match="final_pass"):
+        StreamSession(tiny_model(), VOCAB, ChunkSpec(8, 64), LogMel(), word_confidence=True)
+    with pytest.raises(ValueError, match="final_pass"):
+        make_app(tmp_path, warm=False, word_confidence=True)
+    seen: list[dict] = []
+    monkeypatch.setattr(server, "build_app", lambda *a, **k: seen.append(k) or "app")
+    monkeypatch.setattr(server.uvicorn, "run", lambda app, **k: None)
+    monkeypatch.setattr(server.torch, "set_num_threads", lambda n: None)
+    with pytest.raises(SystemExit, match="final-pass full"):
+        server.main(["--word-confidence", "--final-pass", "none"])
+    assert seen == []  # 모델을 올리기 전에 멈췄다
+    server.main([])
+    server.main(["--word-confidence"])
+    assert [k["word_confidence"] for k in seen] == [False, True]
 
 
 # 확인: 어휘 파일의 토큰 수가 체크포인트의 출력 크기(ModelConfig.vocab_size)와 다르면 evaluate.check_vocab과

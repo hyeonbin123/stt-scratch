@@ -48,6 +48,15 @@ ECE_BINS = 15  # 같은 폭 15구간(등록 값)
 # logit을 취하기 전에 점수를 [SCORE_CLIP, 1 − SCORE_CLIP]로 자른다. CTC 최대 확률은 fp32에서 정확히 1.0이 되는
 # 프레임이 있어 logit이 무한대가 되기 때문이다. 1e-6이면 logit 범위가 약 ±13.8이다.
 SCORE_CLIP = 1e-6
+# 서버 옵션(--word-confidence)이 final 이벤트의 어절 신뢰도에 쓰는 후보와 Platt 계수. 규칙 변경 28 측정
+# (2026-11-01, reports/followup/confidence.json의 "selection")에서 dev_mix 한글 전용 절반 A가 고른 후보와 그
+# 후보로 맞춘 계수 그대로이고, 이 보정 확률로 절반 B에서 AUROC 0.882·ECE 0.045(점추정으로만 충족)로 채택됐다
+# (docs/experiments.md "확정 자막 어절 신뢰도" 결과). 값을 바꾸면 판정받은 보정이 아니게 되므로, 다시 등록하고
+# 재기 전에는 고치지 않는다(tests/test_confidence.py가 결과 파일의 값과 같은지 확인한다). 보정은 GPU fp16
+# 2차 패스(서버 기본 구성)의 덤프로 맞췄다. CPU(fp32) 서버에서는 로짓이 조금 달라 확률도 조금 다를 수 있다.
+SERVICE_CANDIDATE = "entropy_mean"
+SERVICE_PLATT_A = 0.8477686378416198
+SERVICE_PLATT_B = -3.319702918314655
 
 
 # --- 토큰 구간과 점수 ------------------------------------------------------------------------------------
@@ -138,6 +147,29 @@ def word_score(word: Word, candidate: str) -> float:
     kind, how = CANDIDATES[candidate]
     values = word.scores[kind]
     return float(values.min() if how == "min" else values.mean())
+
+
+# 서버 옵션(--word-confidence)의 계산: 세그먼트 하나의 2차 패스 프레임 통계에서 확정 텍스트의 어절마다 보정
+# 확률(그 어절이 맞았을 확률의 추정)을 낸다. 평가 도구(scripts/confidence_eval.py)와 같은 함수(segment_words·
+# word_score·platt_apply)를 같은 순서로 부르므로, 같은 프레임 통계면 판정에 쓴 값과 같은 확률이 나온다. 입력:
+# 프레임별 argmax·최대 log-prob·엔트로피(scripts/final_pass_dump.py의 frame_stats와 같은 정의), 어휘, 후보와
+# Platt 계수(기본은 위 SERVICE_* 등록 값). 출력: (어절 텍스트, 확률) 목록. 어절 텍스트를 공백으로 이으면 그
+# 세그먼트 확정 텍스트를 split()한 것과 같고, 토큰이 없으면 빈 목록이다.
+def word_confidences(
+    argmax: np.ndarray,
+    max_logprob: np.ndarray,
+    entropy: np.ndarray,
+    vocab: Vocab,
+    candidate: str = SERVICE_CANDIDATE,
+    a: float = SERVICE_PLATT_A,
+    b: float = SERVICE_PLATT_B,
+) -> list[tuple[str, float]]:
+    """세그먼트 프레임 통계 → [(어절, Platt 보정 확률)] (확정 텍스트의 공백 분리 순서)."""
+    words = segment_words(argmax, max_logprob, entropy, vocab)
+    if not words:
+        return []
+    probs = platt_apply(np.asarray([word_score(w, candidate) for w in words], dtype=np.float64), a, b)
+    return [(w.text, float(p)) for w, p in zip(words, probs, strict=True)]
 
 
 # --- 정오 라벨 -------------------------------------------------------------------------------------------
