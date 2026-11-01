@@ -595,8 +595,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--itn",
         action="store_true",
         help="final 이벤트에 display_text(확정 텍스트의 한글 수 표현을 아라비아 숫자로 바꾼 표시용 문자열, "
-        "예: '사십 명' → '40명')를 더하고 페이지가 그것을 확정 자막으로 보인다(기본 끔, text는 그대로). dev "
-        "측정(docs/experiments.md 규칙 변경 30)에서 숫자를 숫자로 적은 정답의 CER_ns가 6.5~6.8포인트 내려 "
+        "예: '사십 명' → '40명')를 더하고 페이지가 그것을 확정 자막으로 보인다(기본 끔, text는 그대로). 측정"
+        "(docs/experiments.md 규칙 변경 30: 학습에서 뺀 FLEURS 숫자 발화와 dev_mix 숫자 발화)에서 숫자를 "
+        "숫자로 적은 정답의 CER_ns가 6.5~6.8포인트 내려 "
         "채택됐지만, 숫자를 한글로 적는 표기(Zeroth·Common Voice 정답)와는 어긋나므로 기본으로 켜지 않는다",
     )
     p.add_argument(
