@@ -11,7 +11,9 @@
 마이크를 바로 놓음, (7) flush 뒤 stats가 오면 1.5 s를 기다리지 않고 닫음, (8) /info 줄에 2차 패스·step
 경로, 안내 문구, 잠정 자막 표시(class), CSP 호환(인라인 블록 하나씩, style 속성 없음), (9) 어절 신뢰도
 밑줄 선택: 서버 /info가 word_confidence를 알릴 때만 보이고, 고르기 전과 기본 서버에서는 확정 자막 표시가 전과
-같으며, 고른 뒤에는 보정 확률이 임계(측정의 τ와 같은 0.5) 미만인 어절에만 밑줄이 붙고 세그먼트 순서가 지켜짐.
+같으며, 고른 뒤에는 보정 확률이 임계(측정의 τ와 같은 0.5) 미만인 어절에만 밑줄이 붙고 세그먼트 순서가 지켜짐,
+(10) 숫자 표시: 서버가 final에 display_text를 보내면 그것을 확정 자막으로 보이고(밑줄로 그릴 때는 원래 어절),
+설정 줄은 /info의 itn이 true일 때만 그 사실을 적음.
 """
 
 # [방식] Node.js(node)가 PATH에 없으면 하네스 테스트는 건너뛴다(CI의 ubuntu-24.04 러너에는 있다). 가짜
@@ -370,6 +372,7 @@ def test_info_line_shows_the_second_pass_and_step_path() -> None:
     end = run_page([], info=info)["final"]
     assert "2차 패스 full" in end["info"] and "graph" in end["info"] and "320 ms" in end["info"], end["info"]
     assert "어절 신뢰도" not in end["info"] and end["confopt_hidden"]  # 옵션을 알리지 않는 서버(기본)
+    assert "ITN" not in end["info"]
     failed = run_page([], infoFails=True)["final"]
     assert failed["info"] == "-" and failed["unhandled"] == [] and failed["confopt_hidden"]
 
@@ -416,6 +419,46 @@ def test_underline_option_marks_low_confidence_words_only_when_chosen() -> None:
     assert after["underlined"] == ["마가", "라마"]
     assert after["underline_titles"] == ["신뢰도 0.30", "신뢰도 0.00"]
     assert out["final"]["unhandled"] == []
+
+
+# 확인: 숫자 표시 옵션(서버 --itn)을 켠 서버의 final은 display_text(한글 수 표현을 숫자로 바꾼 표시 문자열)를
+# 함께 보내고, 페이지는 그것을 확정 자막으로 보인다(display_text가 없는 final은 text 그대로). 밑줄을 고른
+# 상태에서 words까지 있으면 어절 신뢰도가 붙은 원래 어절을 그린다(밑줄 쪽 우선). 설정 줄에는 /info의 itn이
+# true일 때만 '숫자 표시 ITN'이 붙는다. 왜: 측정(규칙 변경 30)은 표시 문자열만 바꾸는 옵션으로 채택했고, 기본
+# 서버(display_text 없음)의 표시는 바뀌지 않아야 한다.
+@needs_node
+def test_display_text_is_shown_for_finals_when_the_server_sends_it() -> None:
+    itn_final = final("사십 명이 왔다", 1)
+    itn_final["display_text"] = "40명이 왔다"
+    info = {
+        "chunk_ms": 320,
+        "left_frames": 128,
+        "device": "cuda",
+        "endpoint": {"rule2_s": 0.8},
+        "final_pass": "full",
+        "step_path": "graph",
+        "word_confidence": True,
+        "itn": True,
+    }
+    both = final_words("오십 개", [0.9, 0.3], 2)
+    both["display_text"] = "50개"
+    out = run_page(
+        [
+            start(),
+            open_socket(0),
+            message(final("가나"), 0),
+            message(itn_final, 0),
+            snap("itn"),
+            {"op": "check", "id": "underline", "checked": True},
+            message(both, 0),
+        ],
+        info=info,
+    )
+    shown, end = out["snapshots"]["itn"], out["final"]
+    assert "숫자 표시 ITN" in shown["info"], shown["info"]
+    assert shown["committed"] == "가나\n40명이 왔다\n" and shown["seg"] == "2"
+    assert end["committed"] == "가나\n40명이 왔다\n오십 개\n" and end["underlined"] == ["개"]
+    assert end["unhandled"] == []
 
 
 # 확인(Node 없이): 잠정 자막 span에 class가 있고 그 클래스의 CSS 규칙이 있으며(인라인 style 속성 금지), 안내

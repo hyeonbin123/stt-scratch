@@ -52,6 +52,7 @@ const DEFAULT_INFO = {
   step_path: "fast",
   final_pass: "full",
   word_confidence: false,
+  itn: false,
   vocab: 2000,
   warm_up_s: 1.0,
 };

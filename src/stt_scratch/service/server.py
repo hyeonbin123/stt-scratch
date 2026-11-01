@@ -27,6 +27,9 @@
 어절 신뢰도 옵션(--word-confidence, 기본 끔, 2차 패스 필요)을 켜면 final에만 "words"(확정 텍스트를 공백으로
 나눈 어절마다 {"w": 어절, "conf": 맞았을 확률의 보정 추정, 소수 넷째 자리})와 "confidence_ms"(그 계산 ms,
 final_pass_ms와 별도)가 더 붙는다(docs/experiments.md 규칙 변경 28 측정에서 채택, 서버 기본값은 그대로).
+숫자 표시 옵션(--itn, 기본 끔)을 켜면 final에만 "display_text"(확정 텍스트의 한글 수 표현을 아라비아 숫자로
+바꾼 표시용 문자열, 바꿀 것이 없으면 text와 같음; stt_scratch.itn)가 더 붙는다. text는 그대로다(규칙 변경 30
+측정에서 채택, Zeroth·Common Voice처럼 숫자를 한글로 쓰는 표기와는 충돌하므로 기본은 끔).
 텍스트 프레임 "flush"는 스트림을 마무리하고(마지막 부분 청크 + final), 이벤트들 뒤에 다음으로 답한다.
   {"type": "stats", "chunks": n, "compute_ms_p50": ..., "compute_ms_p90": ..., "compute_ms_max": ...}
 (세션 전체의 청크당 계산 시간). "reset"은 새 세션을 시작한다.
@@ -85,6 +88,9 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
+# itn_rules: 숫자 표시 옵션(--itn)의 규칙형 역정규화(stt_scratch.itn.itn). 인자 이름 itn과 겹치지 않게 모듈
+# 이름을 바꿔 가져온다.
+from stt_scratch import itn as itn_rules
 from stt_scratch.evaluate import check_vocab, load_model
 from stt_scratch.model import streaming
 from stt_scratch.model.features import LogMel
@@ -265,9 +271,11 @@ async def refuse(socket: WebSocket, code: int, reason: str) -> None:
 # 하므로 기존 클라이언트(웹 페이지 포함)는 그대로 동작한다. 측정 클라이언트의 오프라인
 # 재생(scripts/stream_client.py --replay-check)도 이 함수로 직렬화해 서버와 같은 모양의 기록을 만든다.
 # words·confidence_ms는 어절 신뢰도 옵션을 켠 세션의 final 이벤트(words가 채워진 것)에만 넣는다: 확률은 화면
-# 표시용이라 소수 넷째 자리로 줄인다. 옵션을 끈 서버(기본)의 메시지는 전과 같다.
-def event_message(ev: Event) -> dict:
-    """Event를 서버가 보내는 JSON 객체(dict)로 바꾼다. stream_text·words는 값이 있을 때만 넣는다."""
+# 표시용이라 소수 넷째 자리로 줄인다. itn=True(서버 --itn)면 final에만 display_text = itn(text)를 더한다
+# (표시 전용; text·채점 정규화는 그대로, docs/experiments.md 규칙 변경 30). 옵션을 끈 서버(기본)의 메시지는
+# 전과 같다.
+def event_message(ev: Event, itn: bool = False) -> dict:
+    """Event를 서버가 보내는 JSON 객체(dict)로 바꾼다. stream_text·words·display_text는 해당할 때만 넣는다."""
     message = {
         "type": ev.kind,
         "segment": ev.segment,
@@ -282,6 +290,8 @@ def event_message(ev: Event) -> dict:
     if ev.words is not None:
         message["words"] = [{"w": word, "conf": round(prob, 4)} for word, prob in ev.words]
         message["confidence_ms"] = round(ev.confidence_ms, 1)
+    if itn and ev.kind == "final":
+        message["display_text"] = itn_rules.itn(ev.text)
     return message
 
 
@@ -303,6 +313,8 @@ def shown_path(path: Path) -> str:
 # 동일성 관문을 통과하고 같은 실행의 eager보다 청크 p90이 낮은 것 중 가장 빠른 것). GPU는 graph(43.0 ms <
 # eager 72.5 ms), CPU 1스레드는 fast(44.4 ms < 51.3 ms). word_confidence(기본 False)는 final 이벤트의 어절
 # 신뢰도 옵션으로 final_pass="full"이 아니면 모델을 올리기 전에 ValueError다(신뢰도는 2차 패스에서 쟀다).
+# itn(기본 False)은 final 이벤트에 숫자 표시 문자열(display_text)을 더하는 직렬화 옵션이라 세션에는 넘기지
+# 않는다(인식·확정 텍스트는 그대로).
 AUTO_STEP_PATH = {"cuda": "graph", "cpu": "fast"}
 
 
@@ -328,6 +340,7 @@ def build_app(
     max_frame_bytes: int = MAX_FRAME_BYTES,
     max_sessions: int = MAX_SESSIONS,
     word_confidence: bool = False,
+    itn: bool = False,
 ) -> FastAPI:
     # 허용 목록은 모델을 올리기 전에 검사해 잘못된 패턴이면 바로(첫 요청이 아니라) 실패하게 한다. 어절 신뢰도
     # 옵션도 같은 이유로 여기서 본다(warm=False면 세션을 첫 연결 때 처음 만들기 때문이다).
@@ -406,11 +419,11 @@ def build_app(
         return response
 
     # /info 내용: 체크포인트와 그 SHA-256, 청크·좌측 문맥, 장치·정밀도, 끝점 설정, 캐시 정책, 실제 step 경로와
-    # CUDA Graph 캡처 상태, 2차 패스, 어절 신뢰도 옵션, 어휘 크기와 어휘 파일 SHA-256, torch 연산 스레드 수,
-    # 프레임·세션 상한, 예열 시간(페이지는 word_confidence가 true일 때만 밑줄 선택을 보인다). 페이지가 설정을
-    # 표시하고, 측정 스크립트가 서버가 등록한 구성으로 떠 있는지 대조하며 결과 파일에 출처로 남긴다(규칙 변경
-    # 24, docs/ai-verification.md 6단계 검토 반영). 값은 앱을 만들 때 한 번 정한다(스레드 수는 main()이 모델을
-    # 올리기 전에 정하므로 예열·세션과 같은 값이다).
+    # CUDA Graph 캡처 상태, 2차 패스, 어절 신뢰도·숫자 표시 옵션, 어휘 크기와 어휘 파일 SHA-256, torch 연산
+    # 스레드 수, 프레임·세션 상한, 예열 시간(페이지는 word_confidence가 true일 때만 밑줄 선택을 보인다).
+    # 페이지가 설정을 표시하고, 측정 스크립트가 서버가 등록한 구성으로 떠 있는지 대조하며 결과 파일에 출처로
+    # 남긴다(규칙 변경 24, docs/ai-verification.md 6단계 검토 반영). 값은 앱을 만들 때 한 번 정한다(스레드
+    # 수는 main()이 모델을 올리기 전에 정하므로 예열·세션과 같은 값이다).
     info = {
         "checkpoint": shown_path(checkpoint),
         "checkpoint_sha256": hashlib.sha256(Path(checkpoint).read_bytes()).hexdigest(),
@@ -426,6 +439,7 @@ def build_app(
         "graph_failed": graph_failed,
         "final_pass": final_pass,
         "word_confidence": word_confidence,
+        "itn": itn,
         "vocab": len(vocab),
         "vocab_sha256": hashlib.sha256(vocab_path.read_bytes()).hexdigest(),
         "cpu_threads": torch.get_num_threads(),
@@ -494,10 +508,10 @@ def build_app(
                     events = []
                 # 이벤트마다 JSON 텍스트 프레임 하나(event_message: 종류, 세그먼트 번호, 텍스트, 규칙,
                 # 세그먼트 프레임 수, 계산 시간, 2차 패스 시간, 2차 패스를 켰으면 닫힘 이벤트의 stream_text,
-                # 어절 신뢰도 옵션을 켰으면 final의 words·confidence_ms). ensure_ascii=False로 한글을 그대로
-                # 보낸다.
+                # 어절 신뢰도 옵션을 켰으면 final의 words·confidence_ms, 숫자 표시 옵션을 켰으면 final의
+                # display_text). ensure_ascii=False로 한글을 그대로 보낸다.
                 for ev in events:
-                    await socket.send_text(json.dumps(event_message(ev), ensure_ascii=False))
+                    await socket.send_text(json.dumps(event_message(ev, itn=itn), ensure_ascii=False))
                 if stats is not None:
                     await socket.send_text(json.dumps({"type": "stats", **stats}))
         except WebSocketDisconnect:
@@ -578,6 +592,14 @@ def build_parser() -> argparse.ArgumentParser:
         "선택을 보인다",
     )
     p.add_argument(
+        "--itn",
+        action="store_true",
+        help="final 이벤트에 display_text(확정 텍스트의 한글 수 표현을 아라비아 숫자로 바꾼 표시용 문자열, "
+        "예: '사십 명' → '40명')를 더하고 페이지가 그것을 확정 자막으로 보인다(기본 끔, text는 그대로). dev "
+        "측정(docs/experiments.md 규칙 변경 30)에서 숫자를 숫자로 적은 정답의 CER_ns가 6.5~6.8포인트 내려 "
+        "채택됐지만, 숫자를 한글로 적는 표기(Zeroth·Common Voice 정답)와는 어긋나므로 기본으로 켜지 않는다",
+    )
+    p.add_argument(
         "--threads",
         type=int,
         default=None,
@@ -647,6 +669,7 @@ def main(argv: list[str] | None = None) -> None:
         final_pass=args.final_pass,
         allowed_hosts=allowed,
         word_confidence=args.word_confidence,
+        itn=args.itn,
     )
     uvicorn.run(
         app,

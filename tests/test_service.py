@@ -6,7 +6,8 @@
 수), 명령행 실행이 uvicorn에 넘기는 전송 상한과 경고, CSP 해시, 서버 예열, 서버 상태 보고(/info의 어휘
 SHA-256·torch 스레드 수·CUDA Graph 캡처 상태, 캡처 실패 시 fast 폴백), 어휘 크기 검사, CPU 장치의 기본
 1스레드, 2차 패스를 켰을 때만 확정 이벤트에 붙는 stream_text, 어절 신뢰도 옵션(켰을 때만 final에 words가
-붙고 인식 결과는 그대로, 2차 패스 없이는 켜지 않음).
+붙고 인식 결과는 그대로, 2차 패스 없이는 켜지 않음), 숫자 표시 옵션(켰을 때만 final에 display_text =
+itn(text)).
 """
 
 # [방식] 작은 모델(d=32, 2층)과 8토큰 어휘로 CPU에서 돌린다. 서버는 실제 포트에 띄우지 않고 FastAPI
@@ -553,6 +554,55 @@ def test_word_confidence_needs_the_final_pass(tmp_path, monkeypatch) -> None:
     server.main([])
     server.main(["--word-confidence"])
     assert [k["word_confidence"] for k in seen] == [False, True]
+
+
+# 확인: 숫자 표시 옵션(itn)을 켜면 final 메시지에만 display_text = itn.itn(text)가 붙고(직렬화 함수에서 한글
+# 수 표현이 숫자로 바뀜: '사십 명이 왔다' → '40명이 왔다'), partial·endpoint와 옵션을 끈 서버(기본)의
+# 메시지에는 그 키가 없으며, text를 포함한 나머지는 같다. /info에 옵션이 보이고, 명령행 기본은 끔이며 --itn을
+# 주면 build_app에 그대로 넘긴다. 왜: 측정(docs/experiments.md 규칙 변경 30)은 확정 자막의 '표시 문자열'만
+# 바꾸는 옵션으로 채택했다(text·채점은 그대로, 서버 기본값은 끔).
+def test_itn_option_adds_display_text_to_final_events_only(tmp_path, monkeypatch) -> None:
+    from stt_scratch.itn import itn
+    from stt_scratch.service import server
+    from stt_scratch.service.session import Event
+
+    spoken = Event("final", "사십 명이 왔다", 0, 10, "rule2")
+    assert server.event_message(spoken, itn=True)["display_text"] == "40명이 왔다"
+    assert "display_text" not in server.event_message(spoken)
+    for kind, text in (("partial", "사십 명"), ("endpoint", "")):
+        assert "display_text" not in server.event_message(Event(kind, text, 0, 10, None), itn=True)
+    hosts = ["testserver"]
+    kwargs = dict(warm=False, step_path="fast", final_pass="full", allowed_hosts=hosts)
+    on = TestClient(make_app(tmp_path, itn=True, **kwargs))
+    off = TestClient(make_app(tmp_path, **kwargs))
+    assert on.get("/info").json()["itn"] is True and off.get("/info").json()["itn"] is False
+    g = torch.Generator().manual_seed(4)
+    pcm = (torch.randn(3 * 16000, generator=g) * 2000).to(torch.int16).numpy().tobytes()
+
+    def stream(client: TestClient) -> list[dict]:
+        with client.websocket_connect("/ws") as ws:
+            for i in range(0, len(pcm), 10240):
+                ws.send_bytes(pcm[i : i + 10240])
+            ws.send_text("flush")
+            return read_until_stats(ws)
+
+    got_on, got_off = stream(on), stream(off)
+    finals = [m for m in got_on if m["type"] == "final"]
+    assert finals and all(m["display_text"] == itn(m["text"]) for m in finals)
+    assert all("display_text" not in m for m in got_on if m["type"] != "final")
+    assert all("display_text" not in m for m in got_off)
+
+    def same_part(got: list[dict]) -> list[dict]:
+        return [{k: v for k, v in m.items() if k != "display_text" and "ms" not in k} for m in got]
+
+    assert same_part(got_on) == same_part(got_off)
+    seen: list[dict] = []
+    monkeypatch.setattr(server, "build_app", lambda *a, **k: seen.append(k) or "app")
+    monkeypatch.setattr(server.uvicorn, "run", lambda app, **k: None)
+    monkeypatch.setattr(server.torch, "set_num_threads", lambda n: None)
+    server.main([])
+    server.main(["--itn"])
+    assert [k["itn"] for k in seen] == [False, True]
 
 
 # 확인: 어휘 파일의 토큰 수가 체크포인트의 출력 크기(ModelConfig.vocab_size)와 다르면 evaluate.check_vocab과

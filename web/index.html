@@ -103,12 +103,14 @@ function setStatus(text) { $("status").textContent = text; }
 
 // 페이지를 열 때 GET /info로 서버 설정(청크 길이, 좌측 문맥, 장치, rule2 묵음 시간, 2차 패스, step 경로)을 받아
 // 표에 보여 준다. 서버가 어절 신뢰도 옵션(word_confidence)을 켰으면 설정 줄에 그 사실을 더하고 밑줄 선택을
-// 보인다(선택 자체는 꺼진 채로 둔다). 실패해도 페이지는 그대로 쓸 수 있다.
+// 보인다(선택 자체는 꺼진 채로 둔다). 숫자 표시 옵션(itn)도 켰으면 설정 줄에 적는다. 실패해도 페이지는 그대로
+// 쓸 수 있다.
 async function loadInfo() {
   try {
     const r = await fetch("/info"); const j = await r.json();
     $("info").textContent = `청크 ${j.chunk_ms} ms, 좌측 ${j.left_frames}프레임, ${j.device}, 끝점 rule2 ${j.endpoint.rule2_s}s, `
-      + `2차 패스 ${j.final_pass}, step ${j.step_path}` + (j.word_confidence === true ? ", 어절 신뢰도" : "");
+      + `2차 패스 ${j.final_pass}, step ${j.step_path}` + (j.word_confidence === true ? ", 어절 신뢰도" : "")
+      + (j.itn === true ? ", 숫자 표시 ITN" : "");
     if (j.word_confidence === true) $("confopt").hidden = false;
   } catch (e) {}
 }
@@ -226,14 +228,16 @@ async function startAudio(s) {
 }
 
 // 확정 세그먼트 하나를 자막 상자에 붙인다. 기본(밑줄을 고르지 않았거나 final에 words가 없음)은 전과 같이 첫
-// 텍스트 노드(committedNode)에 줄을 바꿔 이어 쓴다. 밑줄을 골랐고 서버가 어절 신뢰도(words: [{w, conf}],
+// 텍스트 노드(committedNode)에 줄을 바꿔 이어 쓰고, 서버가 숫자 표시 문자열(display_text, --itn)을 보냈으면
+// text 대신 그것을 쓴다. 밑줄로 그릴 때는 어절 신뢰도가 원래 확정 텍스트의 어절에 붙어 있으므로 display_text가
+// 아니라 words의 어절을 그린다(둘 다 켜면 밑줄 쪽이 우선). 밑줄을 골랐고 서버가 어절 신뢰도(words: [{w, conf}],
 // --word-confidence)를 보냈으면 어절마다 span을 만들고 conf가 UNDERLINE_TAU 미만인 어절에 lowconf 클래스(물결
 // 밑줄)와 확률 툴팁(title)을 단다. 어절은 공백 하나로 잇는다(확정 텍스트를 공백으로 나눈 열과 같다). 한 번 span으로
 // 그린 뒤에는(richCaptions) 그 뒤 세그먼트도 잠정 자막 앞에 따로 붙여 순서를 지킨다(첫 텍스트 노드에는 그 앞
 // 세그먼트만 남는다). 글자는 textContent·텍스트 노드로만 넣으므로 서버 텍스트가 HTML로 해석되지 않는다.
 function appendFinal(m) {
   const words = $("underline").checked && Array.isArray(m.words) ? m.words : null;
-  const text = m.text;
+  const text = !words && typeof m.display_text === "string" ? m.display_text : m.text;
   committed += (committed ? "\n" : "") + text;
   if (!words && !richCaptions) { committedNode.nodeValue = committed + "\n"; return; }
   richCaptions = true;
