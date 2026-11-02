@@ -1,0 +1,222 @@
+{
+ "rule": "docs/experiments.md rule change 29",
+ "mode": "latency",
+ "provenance": {
+  "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+  "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+  "git_head": "1f24fa7b2c49e91f63b891e7c037c6ee03993bf7",
+  "git_dirty": false,
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 2080 Ti",
+  "torch": "2.11.0+cu128",
+  "limit": 100,
+  "started": "2026-11-02 16:30:59"
+ },
+ "threads": 6,
+ "config": {
+  "chunk": 8,
+  "left": 128,
+  "blank_threshold": 0.8,
+  "rule1_s": 2.4,
+  "rule2_s": 0.8,
+  "rule3_s": 20.0,
+  "reset_cache_on_endpoint": false,
+  "step_path": "graph",
+  "final_pass": "full",
+  "final_pass_bucket": 128,
+  "precision": "fp16-autocast",
+  "tail_s": 3.0
+ },
+ "lists": {
+  "set": "dev_mix",
+  "subset": "hangul-only utterances",
+  "distractors": 100,
+  "seed": 0,
+  "words_per_list": {
+   "n": 100,
+   "p50": 103.0,
+   "p90": 105.0,
+   "max": 106.0
+  }
+ },
+ "grid": {
+  "bonus": [
+   1.0,
+   2.0,
+   3.0,
+   4.0
+  ],
+  "beam": [
+   4,
+   8
+  ],
+  "top_k": 10
+ },
+ "load_before": {
+  "idle": true,
+  "waited_s": 10.1,
+  "snapshot": {
+   "time": "2026-11-02 16:29:45",
+   "gpu": {
+    "utilization_pct": 13.0,
+    "memory_used_mb": 1670.0,
+    "memory_total_mb": 11264.0,
+    "gpu_process_entries": 32
+   },
+   "cpu_pct": 5.414220482713638,
+   "top_cpu_processes": [
+    "music app 0.30",
+    "game launcher 0.23",
+    "shell 0.13",
+    "music app 0.06",
+    "game launcher 0.05",
+    "container app 0.03",
+    "AI assistant app 0.03",
+    "container app 0.03"
+   ],
+   "gpu_utilization_mean_pct": 0.0,
+   "other_python_gpu_apps": 0
+  }
+ },
+ "warm_up_s": 10.048177799908444,
+ "segments": 100,
+ "mel_frames": {
+  "n": 100,
+  "p50": 256.0,
+  "p90": 512.0,
+  "max": 736.0
+ },
+ "frames": {
+  "n": 100,
+  "p50": 64.0,
+  "p90": 128.0,
+  "max": 184.0
+ },
+ "greedy_ms": {
+  "n": 100,
+  "p50": 47.641600016504526,
+  "p90": 48.89122999738902,
+  "max": 73.01909988746047
+ },
+ "biased_ms": {
+  "b1_beam4": {
+   "n": 100,
+   "p50": 49.85235002823174,
+   "p90": 52.5646899593994,
+   "max": 74.00889997370541
+  },
+  "b1_beam8": {
+   "n": 100,
+   "p50": 51.698199938982725,
+   "p90": 57.84352992195636,
+   "max": 69.26629994995892
+  },
+  "b2_beam4": {
+   "n": 100,
+   "p50": 50.18170003313571,
+   "p90": 53.14877999480814,
+   "max": 59.52279991470277
+  },
+  "b2_beam8": {
+   "n": 100,
+   "p50": 51.83615011628717,
+   "p90": 57.63302019331604,
+   "max": 61.184000223875046
+  },
+  "b3_beam4": {
+   "n": 100,
+   "p50": 50.14885007403791,
+   "p90": 52.23991984967142,
+   "max": 67.36280000768602
+  },
+  "b3_beam8": {
+   "n": 100,
+   "p50": 51.65345000568777,
+   "p90": 56.905759987421334,
+   "max": 69.49870008975267
+  },
+  "b4_beam4": {
+   "n": 100,
+   "p50": 49.87164994236082,
+   "p90": 52.91682013776153,
+   "max": 65.27489982545376
+  },
+  "b4_beam8": {
+   "n": 100,
+   "p50": 51.89595010597259,
+   "p90": 57.395679922774434,
+   "max": 73.00279987975955
+  }
+ },
+ "beam_cpu_ms": {
+  "b1_beam4": {
+   "n": 100,
+   "p50": 1.7178498674184084,
+   "p90": 4.289080086164177,
+   "max": 6.722199963405728
+  },
+  "b1_beam8": {
+   "n": 100,
+   "p50": 3.4024000633507967,
+   "p90": 8.554050046950579,
+   "max": 13.362500118091702
+  },
+  "b2_beam4": {
+   "n": 100,
+   "p50": 1.7164000310003757,
+   "p90": 4.325019987300038,
+   "max": 6.947200046852231
+  },
+  "b2_beam8": {
+   "n": 100,
+   "p50": 3.4027000656351447,
+   "p90": 8.676839992403984,
+   "max": 64.41590003669262
+  },
+  "b3_beam4": {
+   "n": 100,
+   "p50": 1.7050000606104732,
+   "p90": 4.37827988062054,
+   "max": 7.137499982491136
+  },
+  "b3_beam8": {
+   "n": 100,
+   "p50": 3.4051998518407345,
+   "p90": 8.569830004125834,
+   "max": 13.330700108781457
+  },
+  "b4_beam4": {
+   "n": 100,
+   "p50": 1.7200498841702938,
+   "p90": 4.309039935469628,
+   "max": 7.478300016373396
+  },
+  "b4_beam8": {
+   "n": 100,
+   "p50": 3.382700029760599,
+   "p90": 8.688900130800905,
+   "max": 13.196500018239021
+  }
+ },
+ "greedy_matches_session": 100,
+ "load_after": {
+  "time": "2026-11-02 16:30:59",
+  "gpu": {
+   "utilization_pct": 14.0,
+   "memory_used_mb": 1808.0,
+   "memory_total_mb": 11264.0,
+   "gpu_process_entries": 32
+  },
+  "cpu_pct": 3.971354166666663,
+  "top_cpu_processes": [
+   "music app 0.23",
+   "game launcher 0.23",
+   "shell 0.13",
+   "music app 0.08",
+   "AI assistant app 0.05",
+   "game launcher 0.03",
+   "game launcher 0.03",
+   "game launcher 0.02"
+  ]
+ }
+}

@@ -1,0 +1,727 @@
+{
+ "rule": "docs/experiments.md rule change 29",
+ "evaluated": {
+  "git_head": "1f24fa7b2c49e91f63b891e7c037c6ee03993bf7",
+  "git_dirty": false,
+  "time": "2026-11-02 16:36:01"
+ },
+ "dumps": {
+  "dev_mix": {
+   "npz_sha256": "96da123deae2847cb03db56e7a4c7c243728b2fed674f226156af59037064b21",
+   "provenance": {
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+    "git_head": "3b7178359eb62fc376f4aa99702f66fef75f02f0",
+    "git_dirty": false,
+    "device": "cuda",
+    "gpu": "NVIDIA GeForce RTX 2080 Ti",
+    "torch": "2.11.0+cu128",
+    "limit": 0,
+    "started": "2026-11-01 17:55:54"
+   },
+   "config": {
+    "chunk": 8,
+    "left": 128,
+    "blank_threshold": 0.8,
+    "rule1_s": 2.4,
+    "rule2_s": 0.8,
+    "rule3_s": 20.0,
+    "reset_cache_on_endpoint": false,
+    "step_path": "graph",
+    "final_pass": "full",
+    "final_pass_bucket": 128,
+    "precision": "fp16-autocast",
+    "tail_s": 3.0,
+    "tail_noise": "-60 dBFS gaussian, seed = utterance index (as scripts/followup.py session)",
+    "top_k": 10
+   },
+   "graph": {
+    "captured": true,
+    "failed": null
+   },
+   "frames": 183744,
+   "segments": 2132,
+   "utterances": 700,
+   "top_k": 10
+  },
+  "dev_h": {
+   "npz_sha256": "3c55e4d52ed0af02666298bf44e6c05bd0a71b8b5a6a4b5472d7a3935321f486",
+   "provenance": {
+    "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+    "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+    "git_head": "3b7178359eb62fc376f4aa99702f66fef75f02f0",
+    "git_dirty": false,
+    "device": "cuda",
+    "gpu": "NVIDIA GeForce RTX 2080 Ti",
+    "torch": "2.11.0+cu128",
+    "limit": 0,
+    "started": "2026-11-01 18:21:59"
+   },
+   "config": {
+    "chunk": 8,
+    "left": 128,
+    "blank_threshold": 0.8,
+    "rule1_s": 2.4,
+    "rule2_s": 0.8,
+    "rule3_s": 20.0,
+    "reset_cache_on_endpoint": false,
+    "step_path": "graph",
+    "final_pass": "full",
+    "final_pass_bucket": 128,
+    "precision": "fp16-autocast",
+    "tail_s": 3.0,
+    "tail_noise": "-60 dBFS gaussian, seed = utterance index (as scripts/followup.py session)",
+    "top_k": 10
+   },
+   "graph": {
+    "captured": true,
+    "failed": null
+   },
+   "frames": 321482,
+   "segments": 2802,
+   "utterances": 1113,
+   "top_k": 10
+  }
+ },
+ "reproduction": {
+  "applicable": true,
+  "tolerance_pp": 0.02,
+  "dev_mix": {
+   "utterances": 700,
+   "exact_match": 700,
+   "cer_ns_dump": 0.22846938187683621,
+   "cer_ns_recorded": 0.22846938187683621,
+   "within_tolerance": true
+  },
+  "dev_h": {
+   "utterances": 1113,
+   "exact_match": 1113,
+   "cer_ns_dump": 0.16014695445246943,
+   "cer_ns_recorded": 0.16014695445246943,
+   "within_tolerance": true
+  },
+  "met": true
+ },
+ "verdict_blocked": [],
+ "subset": "hangul-only utterances",
+ "rare_words": "reference words (training normalization, split on spaces) absent from the word set of manifests/train.jsonl",
+ "lists": {
+  "seed": 0,
+  "distractors": [
+   0,
+   100,
+   500
+  ],
+  "rule": "own rare words + N distractors drawn from the other utterances' rare words of the same set (seed 0 Generator, one permutation of the pool per utterance)",
+  "sets": {
+   "dev_mix": {
+    "utterances": 633,
+    "utterances_with_rare_words": 617,
+    "rare_words": 2468,
+    "rare_words_unmatchable": 42,
+    "rare_word_types": 1954,
+    "list_words": {
+     "0": {
+      "n": 633,
+      "p50": 4.0,
+      "p90": 7.0,
+      "max": 15.0
+     },
+     "100": {
+      "n": 633,
+      "p50": 104.0,
+      "p90": 107.0,
+      "max": 115.0
+     },
+     "500": {
+      "n": 633,
+      "p50": 504.0,
+      "p90": 507.0,
+      "max": 515.0
+     }
+    },
+    "distractors_min": {
+     "0": 0,
+     "100": 100,
+     "500": 500
+    }
+   },
+   "dev_h": {
+    "utterances": 1113,
+    "utterances_with_rare_words": 1097,
+    "rare_words": 6450,
+    "rare_words_unmatchable": 80,
+    "rare_word_types": 854,
+    "list_words": {
+     "0": {
+      "n": 1113,
+      "p50": 5.0,
+      "p90": 10.0,
+      "max": 15.0
+     },
+     "100": {
+      "n": 1113,
+      "p50": 105.0,
+      "p90": 110.0,
+      "max": 115.0
+     },
+     "500": {
+      "n": 1113,
+      "p50": 505.0,
+      "p90": 510.0,
+      "max": 515.0
+     }
+    },
+    "distractors_min": {
+     "0": 0,
+     "100": 100,
+     "500": 500
+    }
+   }
+  }
+ },
+ "grid": {
+  "bonus": [
+   1.0,
+   2.0,
+   3.0,
+   4.0
+  ],
+  "beam": [
+   4,
+   8
+  ],
+  "top_k": 10
+ },
+ "split": {
+  "rule": "SHA-256 of the utterance id (UTF-8): first byte even = A (selection), odd = B (verdict)",
+  "half_a_utterances": 297,
+  "half_b_utterances": 336
+ },
+ "selection": {
+  "half": "A",
+  "distractors": 100,
+  "rows": [
+   {
+    "bonus": 1.0,
+    "beam": 4,
+    "key": "b1_beam4",
+    "utterances": 297,
+    "cer_ns_greedy": 0.23375971908703286,
+    "cer_ns_biased": 0.20717331326812138,
+    "cer_ns_delta": -0.026586405818911474,
+    "cer_ns_delta_ci": [
+     -0.03086215101452423,
+     -0.02307893597189502
+    ],
+    "rare_words": 1116,
+    "rare_words_unmatchable": 18,
+    "rare_match_greedy": 0.2840501792114695,
+    "rare_match_biased": 0.482078853046595,
+    "rare_match_gain": 0.19802867383512546,
+    "rare_match_gain_ci": [
+     0.17350516344334663,
+     0.22390070371942658
+    ],
+    "other_words": 1637,
+    "other_match_greedy": 0.6585216860109957,
+    "other_match_biased": 0.6603543066585217,
+    "no_rare_utterances": 7,
+    "cer_ns_no_rare_greedy": 0.1836734693877551,
+    "cer_ns_no_rare_biased": 0.1836734693877551,
+    "distractor_words_greedy": 0,
+    "distractor_words_biased": 3,
+    "changed_utterances": 170
+   },
+   {
+    "bonus": 1.0,
+    "beam": 8,
+    "key": "b1_beam8",
+    "utterances": 297,
+    "cer_ns_greedy": 0.23375971908703286,
+    "cer_ns_biased": 0.20441434662653624,
+    "cer_ns_delta": -0.02934537246049662,
+    "cer_ns_delta_ci": [
+     -0.033686727369249665,
+     -0.025624511728872385
+    ],
+    "rare_words": 1116,
+    "rare_words_unmatchable": 18,
+    "rare_match_greedy": 0.2840501792114695,
+    "rare_match_biased": 0.5,
+    "rare_match_gain": 0.21594982078853048,
+    "rare_match_gain_ci": [
+     0.19165808495646733,
+     0.24267670979667286
+    ],
+    "other_words": 1637,
+    "other_match_greedy": 0.6585216860109957,
+    "other_match_biased": 0.6634086744043983,
+    "no_rare_utterances": 7,
+    "cer_ns_no_rare_greedy": 0.1836734693877551,
+    "cer_ns_no_rare_biased": 0.1836734693877551,
+    "distractor_words_greedy": 0,
+    "distractor_words_biased": 3,
+    "changed_utterances": 176
+   },
+   {
+    "bonus": 2.0,
+    "beam": 4,
+    "key": "b2_beam4",
+    "utterances": 297,
+    "cer_ns_greedy": 0.23375971908703286,
+    "cer_ns_biased": 0.18673187860546778,
+    "cer_ns_delta": -0.04702784048156508,
+    "cer_ns_delta_ci": [
+     -0.05282932753681765,
+     -0.0418542263148907
+    ],
+    "rare_words": 1116,
+    "rare_words_unmatchable": 18,
+    "rare_match_greedy": 0.2840501792114695,
+    "rare_match_biased": 0.5797491039426523,
+    "rare_match_gain": 0.2956989247311828,
+    "rare_match_gain_ci": [
+     0.26716710802212496,
+     0.32473520663947836
+    ],
+    "other_words": 1637,
+    "other_match_greedy": 0.6585216860109957,
+    "other_match_biased": 0.662797800855223,
+    "no_rare_utterances": 7,
+    "cer_ns_no_rare_greedy": 0.1836734693877551,
+    "cer_ns_no_rare_biased": 0.1836734693877551,
+    "distractor_words_greedy": 0,
+    "distractor_words_biased": 3,
+    "changed_utterances": 219
+   },
+   {
+    "bonus": 2.0,
+    "beam": 8,
+    "key": "b2_beam8",
+    "utterances": 297,
+    "cer_ns_greedy": 0.23375971908703286,
+    "cer_ns_biased": 0.18447454226235266,
+    "cer_ns_delta": -0.0492851768246802,
+    "cer_ns_delta_ci": [
+     -0.05525234270080023,
+     -0.04393833883946724
+    ],
+    "rare_words": 1116,
+    "rare_words_unmatchable": 18,
+    "rare_match_greedy": 0.2840501792114695,
+    "rare_match_biased": 0.6012544802867383,
+    "rare_match_gain": 0.3172043010752688,
+    "rare_match_gain_ci": [
+     0.2900059900444532,
+     0.3461917872117537
+    ],
+    "other_words": 1637,
+    "other_match_greedy": 0.6585216860109957,
+    "other_match_biased": 0.6640195479535737,
+    "no_rare_utterances": 7,
+    "cer_ns_no_rare_greedy": 0.1836734693877551,
+    "cer_ns_no_rare_biased": 0.1836734693877551,
+    "distractor_words_greedy": 0,
+    "distractor_words_biased": 3,
+    "changed_utterances": 220
+   },
+   {
+    "bonus": 3.0,
+    "beam": 4,
+    "key": "b3_beam4",
+    "utterances": 297,
+    "cer_ns_greedy": 0.23375971908703286,
+    "cer_ns_biased": 0.1713067469275144,
+    "cer_ns_delta": -0.06245297215951845,
+    "cer_ns_delta_ci": [
+     -0.06936414001079859,
+     -0.056245001957368874
+    ],
+    "rare_words": 1116,
+    "rare_words_unmatchable": 18,
+    "rare_match_greedy": 0.2840501792114695,
+    "rare_match_biased": 0.6451612903225806,
+    "rare_match_gain": 0.3611111111111111,
+    "rare_match_gain_ci": [
+     0.333028085443038,
+     0.39187793095809376
+    ],
+    "other_words": 1637,
+    "other_match_greedy": 0.6585216860109957,
+    "other_match_biased": 0.6664630421502749,
+    "no_rare_utterances": 7,
+    "cer_ns_no_rare_greedy": 0.1836734693877551,
+    "cer_ns_no_rare_biased": 0.19387755102040816,
+    "distractor_words_greedy": 0,
+    "distractor_words_biased": 4,
+    "changed_utterances": 245
+   },
+   {
+    "bonus": 3.0,
+    "beam": 8,
+    "key": "b3_beam8",
+    "utterances": 297,
+    "cer_ns_greedy": 0.23375971908703286,
+    "cer_ns_biased": 0.16829696513669426,
+    "cer_ns_delta": -0.0654627539503386,
+    "cer_ns_delta_ci": [
+     -0.0722146617396717,
+     -0.05906205202155053
+    ],
+    "rare_words": 1116,
+    "rare_words_unmatchable": 18,
+    "rare_match_greedy": 0.2840501792114695,
+    "rare_match_biased": 0.6702508960573477,
+    "rare_match_gain": 0.38620071684587814,
+    "rare_match_gain_ci": [
+     0.3575159737815348,
+     0.41511568571296137
+    ],
+    "other_words": 1637,
+    "other_match_greedy": 0.6585216860109957,
+    "other_match_biased": 0.6652412950519242,
+    "no_rare_utterances": 7,
+    "cer_ns_no_rare_greedy": 0.1836734693877551,
+    "cer_ns_no_rare_biased": 0.1836734693877551,
+    "distractor_words_greedy": 0,
+    "distractor_words_biased": 6,
+    "changed_utterances": 246
+   },
+   {
+    "bonus": 4.0,
+    "beam": 4,
+    "key": "b4_beam4",
+    "utterances": 297,
+    "cer_ns_greedy": 0.23375971908703286,
+    "cer_ns_biased": 0.15838976674191121,
+    "cer_ns_delta": -0.07536995234512164,
+    "cer_ns_delta_ci": [
+     -0.08284548721076533,
+     -0.06792327499684697
+    ],
+    "rare_words": 1116,
+    "rare_words_unmatchable": 18,
+    "rare_match_greedy": 0.2840501792114695,
+    "rare_match_biased": 0.6935483870967742,
+    "rare_match_gain": 0.4094982078853047,
+    "rare_match_gain_ci": [
+     0.3798370258561749,
+     0.440268905066112
+    ],
+    "other_words": 1637,
+    "other_match_greedy": 0.6585216860109957,
+    "other_match_biased": 0.6615760537568723,
+    "no_rare_utterances": 7,
+    "cer_ns_no_rare_greedy": 0.1836734693877551,
+    "cer_ns_no_rare_biased": 0.20408163265306123,
+    "distractor_words_greedy": 0,
+    "distractor_words_biased": 6,
+    "changed_utterances": 260
+   },
+   {
+    "bonus": 4.0,
+    "beam": 8,
+    "key": "b4_beam8",
+    "utterances": 297,
+    "cer_ns_greedy": 0.23375971908703286,
+    "cer_ns_biased": 0.15575620767494355,
+    "cer_ns_delta": -0.0780035114120893,
+    "cer_ns_delta_ci": [
+     -0.08585936047592489,
+     -0.07056054404481511
+    ],
+    "rare_words": 1116,
+    "rare_words_unmatchable": 18,
+    "rare_match_greedy": 0.2840501792114695,
+    "rare_match_biased": 0.7186379928315412,
+    "rare_match_gain": 0.43458781362007165,
+    "rare_match_gain_ci": [
+     0.4047740384238539,
+     0.46642256146361327
+    ],
+    "other_words": 1637,
+    "other_match_greedy": 0.6585216860109957,
+    "other_match_biased": 0.6652412950519242,
+    "no_rare_utterances": 7,
+    "cer_ns_no_rare_greedy": 0.1836734693877551,
+    "cer_ns_no_rare_biased": 0.19387755102040816,
+    "distractor_words_greedy": 0,
+    "distractor_words_biased": 7,
+    "changed_utterances": 259
+   }
+  ],
+  "chosen": {
+   "bonus": 4.0,
+   "beam": 8,
+   "key": "b4_beam8"
+  }
+ },
+ "dev_mix_half_b": {
+  "distractors_0": {
+   "utterances": 336,
+   "cer_ns_greedy": 0.22397442727757058,
+   "cer_ns_biased": 0.15002663825253063,
+   "cer_ns_delta": -0.07394778902503996,
+   "cer_ns_delta_ci": [
+    -0.08119578475219914,
+    -0.06631003165007657
+   ],
+   "rare_words": 1352,
+   "rare_words_unmatchable": 24,
+   "rare_match_greedy": 0.29142011834319526,
+   "rare_match_biased": 0.6863905325443787,
+   "rare_match_gain": 0.3949704142011834,
+   "rare_match_gain_ci": [
+    0.36526027186403875,
+    0.4216136224076597
+   ],
+   "other_words": 1866,
+   "other_match_greedy": 0.7015005359056806,
+   "other_match_biased": 0.7090032154340836,
+   "no_rare_utterances": 9,
+   "cer_ns_no_rare_greedy": 0.20261437908496732,
+   "cer_ns_no_rare_biased": 0.20261437908496732,
+   "distractor_words_greedy": 0,
+   "distractor_words_biased": 0,
+   "changed_utterances": 267
+  },
+  "distractors_100": {
+   "utterances": 336,
+   "cer_ns_greedy": 0.22397442727757058,
+   "cer_ns_biased": 0.1561001598295152,
+   "cer_ns_delta": -0.06787426744805539,
+   "cer_ns_delta_ci": [
+    -0.07549478817462388,
+    -0.06050992547173846
+   ],
+   "rare_words": 1352,
+   "rare_words_unmatchable": 24,
+   "rare_match_greedy": 0.29142011834319526,
+   "rare_match_biased": 0.6738165680473372,
+   "rare_match_gain": 0.382396449704142,
+   "rare_match_gain_ci": [
+    0.353319603218944,
+    0.40957068236056066
+   ],
+   "other_words": 1866,
+   "other_match_greedy": 0.7015005359056806,
+   "other_match_biased": 0.702572347266881,
+   "no_rare_utterances": 9,
+   "cer_ns_no_rare_greedy": 0.20261437908496732,
+   "cer_ns_no_rare_biased": 0.20915032679738563,
+   "distractor_words_greedy": 0,
+   "distractor_words_biased": 21,
+   "changed_utterances": 275
+  },
+  "distractors_500": {
+   "utterances": 336,
+   "cer_ns_greedy": 0.22397442727757058,
+   "cer_ns_biased": 0.16366542354821523,
+   "cer_ns_delta": -0.060309003729355354,
+   "cer_ns_delta_ci": [
+    -0.0675836326532785,
+    -0.05330552095574124
+   ],
+   "rare_words": 1352,
+   "rare_words_unmatchable": 24,
+   "rare_match_greedy": 0.29142011834319526,
+   "rare_match_biased": 0.6538461538461539,
+   "rare_match_gain": 0.3624260355029586,
+   "rare_match_gain_ci": [
+    0.33191604391966795,
+    0.39068517129282315
+   ],
+   "other_words": 1866,
+   "other_match_greedy": 0.7015005359056806,
+   "other_match_biased": 0.6891747052518756,
+   "no_rare_utterances": 9,
+   "cer_ns_no_rare_greedy": 0.20261437908496732,
+   "cer_ns_no_rare_biased": 0.21568627450980393,
+   "distractor_words_greedy": 1,
+   "distractor_words_biased": 73,
+   "changed_utterances": 283
+  },
+  "beam_only": {
+   "utterances": 336,
+   "cer_ns_greedy": 0.22397442727757058,
+   "cer_ns_biased": 0.22365476824720298,
+   "cer_ns_delta": -0.00031965903036759724,
+   "cer_ns_delta_ci": [
+    -0.0008484891107983117,
+    0.0002138854467758605
+   ],
+   "rare_words": 1352,
+   "rare_words_unmatchable": 24,
+   "rare_match_greedy": 0.29142011834319526,
+   "rare_match_biased": 0.2921597633136095,
+   "rare_match_gain": 0.0007396449704142327,
+   "rare_match_gain_ci": [
+    -0.0028554619215420047,
+    0.004335495556960103
+   ],
+   "other_words": 1866,
+   "other_match_greedy": 0.7015005359056806,
+   "other_match_biased": 0.7031082529474812,
+   "no_rare_utterances": 9,
+   "cer_ns_no_rare_greedy": 0.20261437908496732,
+   "cer_ns_no_rare_biased": 0.20261437908496732,
+   "distractor_words_greedy": 0,
+   "distractor_words_biased": 0,
+   "changed_utterances": 33
+  }
+ },
+ "dev_mix_all": {
+  "utterances": 633,
+  "cer_ns_greedy": 0.22846938187683621,
+  "cer_ns_biased": 0.15594216256696813,
+  "cer_ns_delta": -0.07252721930986808,
+  "cer_ns_delta_ci": [
+   -0.07769382344792103,
+   -0.06770311173126749
+  ],
+  "rare_words": 2468,
+  "rare_words_unmatchable": 42,
+  "rare_match_greedy": 0.2880875202593193,
+  "rare_match_biased": 0.6940842787682334,
+  "rare_match_gain": 0.40599675850891415,
+  "rare_match_gain_ci": [
+   0.38671329558047113,
+   0.4273158782030049
+  ],
+  "other_words": 3503,
+  "other_match_greedy": 0.6814159292035398,
+  "other_match_biased": 0.6851270339708821,
+  "no_rare_utterances": 16,
+  "cer_ns_no_rare_greedy": 0.1952191235059761,
+  "cer_ns_no_rare_biased": 0.20318725099601595,
+  "distractor_words_greedy": 0,
+  "distractor_words_biased": 28,
+  "changed_utterances": 534
+ },
+ "dev_h": {
+  "distractors_0": {
+   "utterances": 1113,
+   "cer_ns_greedy": 0.16014695445246943,
+   "cer_ns_biased": 0.09451843192919468,
+   "cer_ns_delta": -0.06562852252327475,
+   "cer_ns_delta_ci": [
+    -0.06886110674688675,
+    -0.06259682184506926
+   ],
+   "rare_words": 6450,
+   "rare_words_unmatchable": 80,
+   "rare_match_greedy": 0.34387596899224804,
+   "rare_match_biased": 0.7649612403100775,
+   "rare_match_gain": 0.42108527131782947,
+   "rare_match_gain_ci": [
+    0.40705768168256656,
+    0.43431037785042304
+   ],
+   "other_words": 10194,
+   "other_match_greedy": 0.7408279380027467,
+   "other_match_biased": 0.7594663527565234,
+   "no_rare_utterances": 16,
+   "cer_ns_no_rare_greedy": 0.05570291777188329,
+   "cer_ns_no_rare_biased": 0.05570291777188329,
+   "distractor_words_greedy": 0,
+   "distractor_words_biased": 0,
+   "changed_utterances": 1000
+  },
+  "distractors_100": {
+   "utterances": 1113,
+   "cer_ns_greedy": 0.16014695445246943,
+   "cer_ns_biased": 0.09819229324093015,
+   "cer_ns_delta": -0.06195466121153928,
+   "cer_ns_delta_ci": [
+    -0.06516789688683196,
+    -0.0589789277590077
+   ],
+   "rare_words": 6450,
+   "rare_words_unmatchable": 80,
+   "rare_match_greedy": 0.34387596899224804,
+   "rare_match_biased": 0.752093023255814,
+   "rare_match_gain": 0.4082170542635659,
+   "rare_match_gain_ci": [
+    0.3943971162856804,
+    0.42138493307970454
+   ],
+   "other_words": 10194,
+   "other_match_greedy": 0.7408279380027467,
+   "other_match_biased": 0.755051991367471,
+   "no_rare_utterances": 16,
+   "cer_ns_no_rare_greedy": 0.05570291777188329,
+   "cer_ns_no_rare_biased": 0.0610079575596817,
+   "distractor_words_greedy": 1,
+   "distractor_words_biased": 32,
+   "changed_utterances": 1003
+  },
+  "distractors_500": {
+   "utterances": 1113,
+   "cer_ns_greedy": 0.16014695445246943,
+   "cer_ns_biased": 0.10318122990857095,
+   "cer_ns_delta": -0.05696572454389848,
+   "cer_ns_delta_ci": [
+    -0.0600028899119311,
+    -0.05407861988239698
+   ],
+   "rare_words": 6450,
+   "rare_words_unmatchable": 80,
+   "rare_match_greedy": 0.34387596899224804,
+   "rare_match_biased": 0.7368992248062015,
+   "rare_match_gain": 0.3930232558139535,
+   "rare_match_gain_ci": [
+    0.37916503475658614,
+    0.4067150421402835
+   ],
+   "other_words": 10194,
+   "other_match_greedy": 0.7408279380027467,
+   "other_match_biased": 0.7498528546203649,
+   "no_rare_utterances": 16,
+   "cer_ns_no_rare_greedy": 0.05570291777188329,
+   "cer_ns_no_rare_biased": 0.058355437665782495,
+   "distractor_words_greedy": 6,
+   "distractor_words_biased": 122,
+   "changed_utterances": 1015
+  }
+ },
+ "note": "lists are built from the references (own rare words + distractors), as in contextual biasing evaluations; the numbers are optimistic compared with real user lists",
+ "verdict": {
+  "match_gain_threshold": 0.1,
+  "cer_guard": 0.003,
+  "p90_limits_ms": {
+   "cuda": 250.0,
+   "cpu": 500.0
+  },
+  "rare_match_met": true,
+  "cer_guard_met": true,
+  "dev_h_guard_met": true,
+  "latency": {
+   "cuda": {
+    "measured": true,
+    "file": "biasing_latency-cuda.json",
+    "p90_ms": 57.395679922774434,
+    "limit_ms": 250.0,
+    "greedy_p90_ms": 48.89122999738902,
+    "idle_before": true,
+    "comparable": true,
+    "reasons": [],
+    "met": true
+   },
+   "cpu": {
+    "measured": true,
+    "file": "biasing_latency-cpu.json",
+    "p90_ms": 157.80094002839178,
+    "limit_ms": 500.0,
+    "greedy_p90_ms": 148.2713100966066,
+    "idle_before": true,
+    "comparable": true,
+    "reasons": [],
+    "met": true
+   }
+  },
+  "latency_met": true,
+  "adopted": true,
+  "adopted_means": "offer the biased final pass as an option in a separate commit; server defaults stay greedy and exposing a context message in the WebSocket protocol is a user decision"
+ }
+}
