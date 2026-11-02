@@ -1,0 +1,26 @@
+{
+ "idle": true,
+ "waited_s": 10.1,
+ "snapshot": {
+  "time": "2026-11-02 15:48:29",
+  "gpu": {
+   "utilization_pct": 0.0,
+   "memory_used_mb": 1095.0,
+   "memory_total_mb": 11264.0,
+   "gpu_process_entries": 29
+  },
+  "cpu_pct": 4.2317708333333375,
+  "top_cpu_processes": [
+   "game launcher 0.56",
+   "music app 0.42",
+   "cloud sync 0.14",
+   "shell 0.13",
+   "music app 0.11",
+   "container app 0.11",
+   "system 0.11",
+   "system 0.06"
+  ],
+  "gpu_utilization_mean_pct": 0.0,
+  "other_python_gpu_apps": 0
+ }
+}

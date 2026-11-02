@@ -1,0 +1,220 @@
+{
+ "provenance": {
+  "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+  "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+  "git_head": "49ad29a9abbed9b05416f82de328377f7cfad7c7",
+  "git_dirty": false,
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 2080 Ti",
+  "torch": "2.11.0+cu128",
+  "limit": 0,
+  "started": "2026-11-02 15:58:11"
+ },
+ "config": {
+  "chunk": 8,
+  "left": 128,
+  "blank_threshold": 0.8,
+  "rule1_s": 2.4,
+  "rule2_s": 0.8,
+  "rule3_s": 20.0,
+  "reset_cache_on_endpoint": false,
+  "step_path": "graph",
+  "final_pass": "full",
+  "stream_minutes": 2.0,
+  "gaps_s": {
+   "dev_mix": [
+    0.5,
+    1.0
+   ],
+   "dev_h": [
+    0.5
+   ]
+  },
+  "gap_noise_dbfs": -60.0,
+  "gap_noise_seed": "20000 + utterance index in the hangul-only set"
+ },
+ "load_before": {
+  "time": "2026-11-02 15:58:11",
+  "gpu": {
+   "utilization_pct": 3.0,
+   "memory_used_mb": 1415.0,
+   "memory_total_mb": 11264.0,
+   "gpu_process_entries": 32
+  },
+  "cpu_pct": 5.0032488628979905,
+  "top_cpu_processes": [
+   "game launcher 0.30",
+   "music app 0.30",
+   "shell 0.11",
+   "game launcher 0.09",
+   "music app 0.09",
+   "chat app 0.02",
+   "game launcher 0.02",
+   "other app 0.00"
+  ]
+ },
+ "conditions": {
+  "dev_mix_gap_0.5": {
+   "set": "dev_mix",
+   "gap_s": 0.5,
+   "utterances": 633,
+   "streams": 38,
+   "audio_s": 4656.84,
+   "stream_s": {
+    "n": 38,
+    "min": 59.34,
+    "p10": 121.1628,
+    "p50": 123.304,
+    "p90": 127.26400000000001,
+    "max": 136.18
+   },
+   "cer_ns_stream": 0.2705224955354571,
+   "cer_ns_final_pass": 0.22702920675154098,
+   "final_pass_vs_stream": {
+    "n": 38,
+    "rate_a": 0.22702920675154098,
+    "rate_b": 0.2705224955354571,
+    "ratio_a_over_b": 0.8392248722316865,
+    "diff_a_minus_b": -0.04349328878391612,
+    "diff_ci95": [
+     -0.05186854038223299,
+     -0.03654616965999252
+    ],
+    "ci_excludes_zero": true
+   },
+   "expression": "gain_kept",
+   "segments": 793,
+   "rules": {
+    "rule2": 645,
+    "eos": 2,
+    "rule1": 146
+   },
+   "text_segments": 647,
+   "rule3_cut_rate": 0.0,
+   "segment_s": {
+    "n": 647,
+    "min": 1.92,
+    "p10": 3.84,
+    "p50": 6.08,
+    "p90": 9.92,
+    "max": 18.240000000000002
+   },
+   "seconds": 128.7
+  },
+  "dev_mix_gap_1.0": {
+   "set": "dev_mix",
+   "gap_s": 1.0,
+   "utterances": 633,
+   "streams": 40,
+   "audio_s": 4973.339999999999,
+   "stream_s": {
+    "n": 40,
+    "min": 104.26,
+    "p10": 120.4536,
+    "p50": 123.27600000000001,
+    "p90": 131.05,
+    "max": 135.78
+   },
+   "cer_ns_stream": 0.27340284578604757,
+   "cer_ns_final_pass": 0.22990955700213145,
+   "final_pass_vs_stream": {
+    "n": 40,
+    "rate_a": 0.22990955700213145,
+    "rate_b": 0.27340284578604757,
+    "ratio_a_over_b": 0.8409186683522967,
+    "diff_a_minus_b": -0.04349328878391612,
+    "diff_ci95": [
+     -0.04966952601115231,
+     -0.0378366514305008
+    ],
+    "ci_excludes_zero": true
+   },
+   "expression": "gain_kept",
+   "segments": 865,
+   "rules": {
+    "rule2": 648,
+    "rule1": 217
+   },
+   "text_segments": 651,
+   "rule3_cut_rate": 0.0,
+   "segment_s": {
+    "n": 651,
+    "min": 1.6,
+    "p10": 4.16,
+    "p50": 6.4,
+    "p90": 10.24,
+    "max": 18.56
+   },
+   "seconds": 136.1
+  },
+  "dev_h_gap_0.5": {
+   "set": "dev_h",
+   "gap_s": 0.5,
+   "utterances": 1113,
+   "streams": 81,
+   "audio_s": 10081.6411875,
+   "stream_s": {
+    "n": 81,
+    "min": 80.057375,
+    "p10": 120.994,
+    "p50": 124.325,
+    "p90": 129.1045625,
+    "max": 137.8476875
+   },
+   "cer_ns_stream": 0.21174800651275413,
+   "cer_ns_final_pass": 0.1581430301006137,
+   "final_pass_vs_stream": {
+    "n": 81,
+    "rate_a": 0.1581430301006137,
+    "rate_b": 0.21174800651275413,
+    "ratio_a_over_b": 0.7468454258675079,
+    "diff_a_minus_b": -0.05360497641214043,
+    "diff_ci95": [
+     -0.05885740236232132,
+     -0.04854878327470128
+    ],
+    "ci_excludes_zero": true
+   },
+   "expression": "gain_kept",
+   "segments": 1145,
+   "rules": {
+    "rule2": 1062,
+    "rule3": 7,
+    "eos": 39,
+    "rule1": 37
+   },
+   "text_segments": 1127,
+   "rule3_cut_rate": 0.006211180124223602,
+   "segment_s": {
+    "n": 1127,
+    "min": 0.96,
+    "p10": 5.44,
+    "p50": 8.32,
+    "p90": 13.120000000000001,
+    "max": 20.16
+   },
+   "seconds": 244.3
+  }
+ },
+ "warm_up_s": 17.151146299904212,
+ "load_after": {
+  "time": "2026-11-02 16:07:02",
+  "gpu": {
+   "utilization_pct": 46.0,
+   "memory_used_mb": 1809.0,
+   "memory_total_mb": 11264.0,
+   "gpu_process_entries": 32
+  },
+  "cpu_pct": 3.715775749674055,
+  "top_cpu_processes": [
+   "game launcher 0.27",
+   "music app 0.22",
+   "shell 0.11",
+   "music app 0.08",
+   "game launcher 0.06",
+   "AI assistant app 0.03",
+   "chat app 0.02",
+   "other app 0.00"
+  ]
+ }
+}

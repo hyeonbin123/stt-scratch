@@ -1,0 +1,51 @@
+{
+ "server_info": {
+  "checkpoint": "outputs/stage4/trimtail/avg10.pt",
+  "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+  "chunk_frames": 8,
+  "chunk_ms": 320,
+  "left_frames": 128,
+  "device": "cuda",
+  "precision": "fp16-autocast",
+  "endpoint": {
+   "blank_threshold": 0.8,
+   "rule1_s": 2.4,
+   "rule2_s": 0.8,
+   "rule3_s": 20.0
+  },
+  "reset_cache_on_endpoint": false,
+  "step_path": "graph",
+  "graph_captured": true,
+  "graph_failed": null,
+  "final_pass": "full",
+  "word_confidence": false,
+  "itn": false,
+  "vocab": 1288,
+  "vocab_sha256": "e7693a8d082765167976b11fc44b155bd524f289623587696d1dfadc5ab05695",
+  "cpu_threads": 6,
+  "max_frame_bytes": 1048576,
+  "max_sessions": 8,
+  "warm_up_s": 22.61
+ },
+ "manifest": "dev_h",
+ "limit": 50,
+ "paced": true,
+ "started": "2026-11-02 15:49:11",
+ "replay": {
+  "checkpoint": "avg10.pt",
+  "checkpoint_sha256": "6502406c19860e46e751026fb2bae00c86d0517fcff12686b20457a1dbd9884b",
+  "vocab_sha256": "e7693a8d082765167976b11fc44b155bd524f289623587696d1dfadc5ab05695",
+  "device": "cuda",
+  "torch": "2.11.0+cu128",
+  "cpu_threads": 6,
+  "amp": true,
+  "step_path": "graph",
+  "final_pass": "full",
+  "warm_up_s": 17.34,
+  "graph": {
+   "captured": true,
+   "failed": null
+  },
+  "finished": "2026-11-02 15:57:11"
+ }
+}
