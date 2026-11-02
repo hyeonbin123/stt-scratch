@@ -17,6 +17,12 @@ final 이벤트가 세그먼트를 닫는다. 끝점은 인식 상태(greedy 상
   step_path          인코더 step 경로("eager" 측정에 쓴 원래 경로, "fast", "graph"; model/streaming.py).
   word_confidence    True면(2차 패스 필요, 기본 끔) final 이벤트의 words에 확정 텍스트 어절마다 보정 확률을
                      싣는다(docs/experiments.md 규칙 변경 28 측정에서 채택된 어절 신뢰도, confidence.py).
+  context            핫워드 목록의 ContextTrie를 주면(2차 패스 필요, 기본 None = 서버 --hotwords 옵션) 확정
+                     자막을 greedy 대신 그 목록으로 편향한 top-k CTC prefix beam으로 디코딩한다
+                     (docs/experiments.md 규칙 변경 29 측정에서 채택된 구성 b 4·beam 8·top-k 10, biasing.py).
+                     목록에 쓸 수 있는 어절이 없으면 greedy와 비트 단위로 같다. 어절 신뢰도와는 함께 쓸 수
+                     없다(신뢰도는 greedy 2차 패스로 보정했고 토큰 구간이 argmax를 따르므로 편향된 텍스트와
+                     맞지 않는다).
 """
 
 # [핵심 결정] (1) 버퍼를 다음 세그먼트로 넘기는 이유: 처음 구현은 버퍼까지 지워 끝점마다 다음 음성 약 300
@@ -36,10 +42,12 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-# confidence: 어절 신뢰도 옵션의 어절 점수·Platt 보정(평가 도구와 같은 함수, 순수 numpy).
+# confidence: 어절 신뢰도 옵션의 어절 점수·Platt 보정(평가 도구와 같은 함수, 순수 numpy). biasing: 핫워드
+# 옵션의 trie와 측정에서 고른 구성(SERVICE_BEAM·SERVICE_TOP_K; 보너스는 trie를 만들 때 들어간다).
 from stt_scratch import confidence
+from stt_scratch.biasing import SERVICE_BEAM, SERVICE_TOP_K, ContextTrie
 from stt_scratch.model.conformer import ChunkConformerCTC
-from stt_scratch.model.decode import GreedyState, greedy_batch
+from stt_scratch.model.decode import GreedyState, biased_batch, greedy_batch
 from stt_scratch.model.features import FIRST_PACKET_EXTRA, HOP, N_MELS, LogMel, StreamingFbank
 from stt_scratch.model.mask import ChunkSpec
 from stt_scratch.model.streaming import StreamingEncoder
@@ -121,7 +129,9 @@ def word_confidences_from_logits(logits: torch.Tensor, vocab: Vocab) -> list[tup
 # 스트리밍 인식 세션. 생성 인자: 모델·어휘·청크 설정(서비스는 ChunkSpec(8, 128)), LogMel, 끝점 설정, 끝점 뒤
 # 캐시 초기화 여부(이 클래스의 기본값은 True지만 서버는 6단계 선택대로 False를 넘긴다), amp(None이면 GPU에서만
 # fp16), word_confidence(True면 final 이벤트에 어절 신뢰도; final_pass="full"이어야 하고 아니면 ValueError —
-# 신뢰도는 2차 패스 로짓에서 재고 보정했기 때문이다).
+# 신뢰도는 2차 패스 로짓에서 재고 보정했기 때문이다), context(핫워드 목록의 ContextTrie; final_pass="full"
+# 이어야 하고 word_confidence와 함께 주면 ValueError — 편향은 2차 패스 디코딩이고, 신뢰도의 토큰 구간은
+# greedy argmax를 따르므로 편향된 텍스트에는 맞지 않는다).
 # partial_interval_frames는 부분 자막 간격 옵션이지만, 지금 구현은 새 토큰이 있을 때만 partial을 내므로 실제
 # 동작에 영향이 없다(기본 0).
 class StreamSession:
@@ -139,11 +149,19 @@ class StreamSession:
         final_pass: str = "none",
         final_pass_bucket: int = 128,
         word_confidence: bool = False,
+        context: ContextTrie | None = None,
     ) -> None:
         if final_pass not in ("none", "full"):
             raise ValueError("final_pass must be 'none' or 'full'")
         if word_confidence and final_pass != "full":
             raise ValueError("word_confidence needs final_pass='full' (it was calibrated on the final pass)")
+        if context is not None and final_pass != "full":
+            raise ValueError("context (hotword biasing) needs final_pass='full' (it biases the final pass)")
+        if context is not None and word_confidence:
+            raise ValueError(
+                "context (hotword biasing) cannot be combined with word_confidence: the confidence was "
+                "calibrated on the greedy final pass and its token spans follow the greedy argmax"
+            )
         self.model = model
         self.vocab = vocab
         self.spec = spec
@@ -162,6 +180,10 @@ class StreamSession:
         self.word_confidence = word_confidence
         self._pass_words: list[tuple[str, float]] | None = None
         self._pass_words_ms = 0.0
+        # 핫워드 옵션. decode_full이 항목이 있는 trie면 greedy 대신 biased_batch를 부른다(측정 구성
+        # SERVICE_BEAM·SERVICE_TOP_K; 보너스는 trie에 들어 있다). 목록을 받을 때 한 번 만든 trie를 모든 세션이
+        # 공유한다(읽기만 한다).
+        self.context = context
         self.fbank = StreamingFbank(logmel)
         self.endpointer = Endpointer(endpoint or EndpointConfig())
         self.reset_cache_on_endpoint = reset_cache_on_endpoint
@@ -302,12 +324,15 @@ class StreamSession:
 
     @torch.no_grad()
     def decode_full(self, mel: torch.Tensor) -> tuple[str, float]:
-        """원시 log-mel (T, 80)을 같은 모델의 전체 문맥 모드(ChunkSpec(0, -1))로 greedy 디코딩한다.
+        """원시 log-mel (T, 80)을 같은 모델의 전체 문맥 모드(ChunkSpec(0, -1))로 디코딩한다.
 
         세션 정밀도(GPU fp16 autocast)로 돌리고 (텍스트, 계산 ms)를 돌려준다. 시간은 앞뒤 GPU 동기화를 포함한
-        모델 forward + greedy(argmax를 CPU로 가져오는 것까지)다. 길이는 final_pass_bucket 배수로 0을 덧붙이고
-        실제 길이를 frames로 넘기므로 덧붙인 프레임은 결과에 영향이 없다. 어절 신뢰도 옵션을 켰으면 그 시간을
-        잰 뒤 같은 로짓의 유효 프레임으로 어절 신뢰도를 계산해 _pass_words(·_pass_words_ms)에 둔다.
+        모델 forward + 디코딩(결과 id를 CPU로 가져오는 것까지)이다. 디코딩은 greedy이고, 핫워드 목록(context,
+        항목 1개 이상)이 있으면 그 대신 biased_batch(fp32 log_softmax → 프레임 top-k → CPU prefix beam + trie
+        보너스; scripts/bias_eval.py의 편향 2차 패스와 같은 계산)라 빔 시간도 이 안에 든다. 길이는
+        final_pass_bucket 배수로 0을 덧붙이고 실제 길이를 frames로 넘기므로 덧붙인 프레임은 결과에 영향이
+        없다. 어절 신뢰도 옵션을 켰으면 그 시간을 잰 뒤 같은 로짓의 유효 프레임으로 어절 신뢰도를 계산해
+        _pass_words(·_pass_words_ms)에 둔다.
         """
         t = mel.shape[0]
         bucket = self.final_pass_bucket
@@ -320,7 +345,17 @@ class StreamSession:
         with self._autocast():
             frames = torch.tensor([t], device=self.device)
             logits, _, lengths = self.model(mel[None], frames, ChunkSpec(0, -1))
-        ids = greedy_batch(logits.float(), lengths)[0]
+        if self.context is not None and self.context.entries > 0:
+            ids = biased_batch(
+                logits,
+                lengths,
+                self.context,
+                beam=SERVICE_BEAM,
+                top_k=SERVICE_TOP_K,
+                blank=self.vocab.blank_id,
+            )[0]
+        else:
+            ids = greedy_batch(logits.float(), lengths)[0]
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         text = self.vocab.decode(ids)

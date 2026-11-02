@@ -6,8 +6,9 @@
 # greedy와 prefix beam의 차이가 거의 없다고 봤고(WeNet 보고), LM을 쓰는 2차 디코딩(5단계)은
 # 생략했다(docs/survey/README.md "결정" 디코딩, docs/experiments.md 5단계 판정).
 # [연결] evaluate.py(full·simulated는 greedy_batch, 실제 스트리밍은 GreedyState), service.session(서비스),
-# scripts/stage2_report.py. biased_batch는 서비스에 아직 연결하지 않았다: 확정 자막 핫워드 편향은 등록 측정
-# (docs/experiments.md 규칙 변경 29) 뒤에 옵션으로만 붙이고, 지금은 scripts/bias_eval.py(지연 측정)만 쓴다.
+# scripts/stage2_report.py. biased_batch는 등록 측정(docs/experiments.md 규칙 변경 29, 2026-11-02 채택) 뒤
+# 서버 옵션 --hotwords로만 서비스에 붙었다: service.session.StreamSession(context=...)의 decode_full이 greedy
+# 대신 부른다(서버 기본값은 greedy 그대로). scripts/bias_eval.py(지연 측정)도 같은 함수를 쓴다.
 
 from __future__ import annotations
 

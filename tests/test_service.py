@@ -7,7 +7,8 @@
 SHA-256·torch 스레드 수·CUDA Graph 캡처 상태, 캡처 실패 시 fast 폴백), 어휘 크기 검사, CPU 장치의 기본
 1스레드, 2차 패스를 켰을 때만 확정 이벤트에 붙는 stream_text, 어절 신뢰도 옵션(켰을 때만 final에 words가
 붙고 인식 결과는 그대로, 2차 패스 없이는 켜지 않음), 숫자 표시 옵션(켰을 때만 final에 display_text =
-itn(text)).
+itn(text)), 핫워드 옵션(켰을 때만 확정 자막이 측정 경로와 같은 편향 디코딩이고 메시지 형식·/info는 그대로,
+2차 패스 없이나 어절 신뢰도와 함께는 켜지 않음).
 """
 
 # [방식] 작은 모델(d=32, 2층)과 8토큰 어휘로 CPU에서 돌린다. 서버는 실제 포트에 띄우지 않고 FastAPI
@@ -603,6 +604,106 @@ def test_itn_option_adds_display_text_to_final_events_only(tmp_path, monkeypatch
     server.main([])
     server.main(["--itn"])
     assert [k["itn"] for k in seen] == [False, True]
+
+
+# 확인: 핫워드 목록(context)을 준 세션의 확정 자막은 같은 세그먼트 mel을 전체 문맥으로 forward한 로짓을
+# biased_batch(측정 구성 beam 8·top-k 10)로 푼 것과 같고(측정 도구 scripts/bias_eval.py의 편향 2차 패스와 같은
+# 계산), 목록 없는 세션의 greedy 확정 자막과는 다르다(편향이 실제로 작동하는 입력). 어휘 밖 어절만 든 목록
+# (항목 0)은 greedy 세션과 같은 텍스트를 낸다. 목록은 2차 패스가 있어야 하고 어절 신뢰도와 함께 쓸 수 없다
+# (신뢰도는 greedy 2차 패스로 보정했고 토큰 구간이 argmax를 따른다). 왜: 서버 기본값(greedy)은 그대로여야
+# 하고, 옵션을 켰을 때의 출력이 측정에서 판정받은 계산과 같아야 한다(docs/experiments.md 규칙 변경 29).
+def test_hotword_context_biases_the_final_pass_like_the_measurement_path() -> None:
+    from stt_scratch.biasing import SERVICE_BEAM, SERVICE_BONUS, SERVICE_TOP_K, ContextTrie
+    from stt_scratch.model.decode import biased_batch
+
+    model = tiny_model()
+    trie = ContextTrie.from_words(["가마", "나다"], VOCAB, SERVICE_BONUS)
+
+    def make(**kwargs) -> StreamSession:
+        return StreamSession(
+            model, VOCAB, ChunkSpec(8, 64), LogMel(), EndpointConfig(), False, final_pass="full", **kwargs
+        )
+
+    biased, plain = make(context=trie), make()
+    mel = torch.randn(300, 80, generator=torch.Generator().manual_seed(7))
+    text, ms = biased.decode_full(mel)
+    assert ms >= 0.0
+    padded = torch.cat([mel, mel.new_zeros(384 - 300, 80)], dim=0)  # final_pass_bucket 128의 배수
+    with torch.no_grad():
+        logits, _, lengths = model(padded[None], torch.tensor([300]), ChunkSpec(0, -1))
+    expected = biased_batch(
+        logits, lengths, trie, beam=SERVICE_BEAM, top_k=SERVICE_TOP_K, blank=VOCAB.blank_id
+    )
+    assert text == VOCAB.decode(expected[0])
+    greedy_text = plain.decode_full(mel)[0]
+    assert text != greedy_text
+    empty = make(context=ContextTrie.from_words(["abc", ""], VOCAB, SERVICE_BONUS))
+    assert empty.context.entries == 0 and empty.decode_full(mel)[0] == greedy_text
+    with pytest.raises(ValueError, match="final_pass"):
+        StreamSession(model, VOCAB, ChunkSpec(8, 64), LogMel(), context=trie)
+    with pytest.raises(ValueError, match="word_confidence"):
+        make(context=trie, word_confidence=True)
+
+
+# 확인: 핫워드 옵션(hotwords)을 켠 서버는 같은 PCM에서 /info가 끈 서버와 같고(옵션을 알리는 키가 없다), 부분
+# 자막(partial)과 세그먼트를 닫는 이벤트의 종류·세그먼트 번호·규칙·프레임 수·stream_text·메시지 키가 같으며
+# (새 필드 없음), 바뀌는 것은 확정 텍스트만이다(이 PCM에서 실제로 달라진다). 명령행: --hotwords는 파일을 읽어
+# build_app에 어절 목록으로 넘기고(빈 줄·주석 제외), 기본은 None, --final-pass none이나 --word-confidence와
+# 함께 주면 모델을 올리기 전에 멈추며, 없는 파일도 멈춘다. build_app도 같은 조합을 모델을 올리기 전에
+# 거부한다. 왜: 등록(docs/experiments.md 규칙 변경 29)대로 옵션은 서버 기본값·WebSocket 프로토콜·/info를
+# 바꾸지 않아야 한다(연결별 목록 메시지와 /info 표기는 사용자 결정).
+def test_hotwords_option_changes_only_the_final_text(tmp_path, monkeypatch) -> None:
+    from stt_scratch.service import server
+
+    hosts = ["testserver"]
+    kwargs = dict(warm=False, step_path="fast", final_pass="full", allowed_hosts=hosts)
+    on = TestClient(make_app(tmp_path, hotwords=["가마", "나다"], **kwargs))
+    off = TestClient(make_app(tmp_path, **kwargs))
+    assert on.get("/info").json() == off.get("/info").json()
+    g = torch.Generator().manual_seed(4)
+    pcm = (torch.randn(3 * 16000, generator=g) * 2000).to(torch.int16).numpy().tobytes()
+
+    def stream(client: TestClient) -> list[dict]:
+        with client.websocket_connect("/ws") as ws:
+            for i in range(0, len(pcm), 10240):
+                ws.send_bytes(pcm[i : i + 10240])
+            ws.send_text("flush")
+            return read_until_stats(ws)
+
+    got_on, got_off = stream(on), stream(off)
+
+    # 시간 값(이름에 ms가 든 키)을 빼고, 닫힘 이벤트는 text도 빼고 비교한다(그것만 다를 수 있다).
+    def frame(m: dict) -> dict:
+        drop = {"text"} if m["type"] in ("final", "endpoint") else set()
+        return {k: v for k, v in m.items() if "ms" not in k and k not in drop}
+
+    assert [frame(m) for m in got_on] == [frame(m) for m in got_off]
+    finals_on = [m["text"] for m in got_on if m["type"] == "final"]
+    finals_off = [m["text"] for m in got_off if m["type"] == "final"]
+    assert finals_on and finals_on != finals_off
+
+    with pytest.raises(ValueError, match="final_pass"):
+        make_app(tmp_path, warm=False, hotwords=["가마"], allowed_hosts=hosts)
+    with pytest.raises(ValueError, match="word_confidence"):
+        make_app(tmp_path, hotwords=["가마"], word_confidence=True, **kwargs)
+    seen: list[dict] = []
+    monkeypatch.setattr(server, "build_app", lambda *a, **k: seen.append(k) or "app")
+    monkeypatch.setattr(server.uvicorn, "run", lambda app, **k: None)
+    monkeypatch.setattr(server.torch, "set_num_threads", lambda n: None)
+    path = tmp_path / "hotwords.txt"
+    path.write_text("# 목록\n가마\n\n나다\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="final-pass full"):
+        server.main(["--hotwords", str(path), "--final-pass", "none"])
+    with pytest.raises(SystemExit, match="word-confidence"):
+        server.main(["--hotwords", str(path), "--word-confidence"])
+    with pytest.raises(SystemExit, match="cannot read"):
+        server.main(["--hotwords", str(tmp_path / "missing.txt")])
+    assert seen == []  # 모델을 올리기 전에 멈췄다
+    server.main([])
+    server.main(["--hotwords", str(path)])
+    assert [k["hotwords"] for k in seen] == [None, ["가마", "나다"]]
+    # 도움말이 렌더링된다(argparse는 help를 %-형식으로 펼치므로 '%'가 든 도움말은 이 호출에서 깨진다).
+    assert "--hotwords" in server.build_parser().format_help()
 
 
 # 확인: 어휘 파일의 토큰 수가 체크포인트의 출력 크기(ModelConfig.vocab_size)와 다르면 evaluate.check_vocab과

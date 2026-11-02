@@ -9,7 +9,8 @@ beam, greedy 분기, 평가·지연 도구.
 경로(scripts/final_pass_dump.frame_stats 배열 → prefix_beam_search)가 같은 id를 낸다, (6) 평가 도구가 희귀
 어절·편향 목록을 등록대로 만들고, 덤프 greedy가 기록된 확정 가설을 재현하는지 확인하며, 절반 A에서만 고르고
 절반 B에서 판정하고, 지연 결과가 없으면 채택을 정하지 않는다, (7) 지연 측정이 작은 무작위 모델로 CPU에서
-끝까지 돌고 있는 결과는 덮지 않는다.
+끝까지 돌고 있는 결과는 덮지 않는다, (8) 서버 옵션(--hotwords)의 구성 상수가 커밋된 측정 결과의 선택과 같고
+목록 파일 읽기가 문서의 형식(빈 줄·주석 무시, BOM 허용)대로다. 서버 옵션 자체는 tests/test_service.py.
 """
 
 # [방식] 디코더는 손으로 짠 프레임 분포(토큰 프레임 + blank 프레임)로 결과를 미리 계산할 수 있게 하고, 평가
@@ -246,6 +247,30 @@ def test_live_decoding_matches_the_dump_arrays() -> None:
         assert dumped == live[b]
     with pytest.raises(ValueError):
         biased_batch(logits, lengths, trie, top_k=0)
+
+
+# 확인: 서버 옵션(--hotwords)이 쓰는 구성 상수(biasing.SERVICE_*)가 커밋된 측정 결과(reports/followup/
+# biasing.json의 절반 A 선택과 격자 top-k)와 같고, 그 결과의 판정이 채택이며 재현 조건이 충족됐다. 왜: 값을
+# 손으로 옮겨 적었으므로 결과 파일과 어긋나면(오타, 다시 잰 결과) 서버가 판정받지 않은 구성을 쓰게 된다.
+def test_service_biasing_constants_match_the_recorded_selection() -> None:
+    result = json.loads((REPO / "reports" / "followup" / "biasing.json").read_text(encoding="utf-8"))
+    chosen = result["selection"]["chosen"]
+    assert (chosen["bonus"], chosen["beam"]) == (biasing.SERVICE_BONUS, biasing.SERVICE_BEAM)
+    assert result["grid"]["top_k"] == biasing.SERVICE_TOP_K == be.TOP_K
+    assert result["verdict"]["adopted"] is True and result["reproduction"]["met"] is True
+
+
+# 확인: 목록 파일 읽기(read_word_list)는 앞뒤 공백을 지우고 빈 줄과 '#'으로 시작하는 줄을 건너뛰며, BOM이
+# 있어도 첫 항목이 깨지지 않고, 같은 어절이 여러 줄이면 그대로 돌려준다(trie가 한 항목으로 합친다). 어휘 밖
+# 어절은 from_words가 뺀다. 왜: 서버 옵션의 입력 형식이 문서와 같아야 하고, Windows 편집기의 BOM이 첫 어절을
+# 어휘 밖으로 만들면 그 어절만 조용히 빠진다.
+def test_read_word_list_skips_blank_and_comment_lines(tmp_path) -> None:
+    path = tmp_path / "hotwords.txt"
+    path.write_text("﻿# 주석 줄\n가나 \n\n  나다라\n가나\nabc\n#\n", encoding="utf-8")
+    words = biasing.read_word_list(path)
+    assert words == ["가나", "나다라", "가나", "abc"]
+    trie = biasing.ContextTrie.from_words(words, VOCAB, biasing.SERVICE_BONUS)
+    assert trie.entries == 2 and trie.dropped == ["abc"] and trie.bonus == biasing.SERVICE_BONUS
 
 
 # 확인: 목록 어절을 학습 정규화한 뒤 공백을 빼서 넣고(같은 어절은 하나), 어휘에 없는 음절이 든 어절·빈 어절은

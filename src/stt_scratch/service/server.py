@@ -30,6 +30,10 @@ final_pass_ms와 별도)가 더 붙는다(docs/experiments.md 규칙 변경 28 �
 숫자 표시 옵션(--itn, 기본 끔)을 켜면 final에만 "display_text"(확정 텍스트의 한글 수 표현을 아라비아 숫자로
 바꾼 표시용 문자열, 바꿀 것이 없으면 text와 같음; stt_scratch.itn)가 더 붙는다. text는 그대로다(규칙 변경 30
 측정에서 채택, Zeroth·Common Voice처럼 숫자를 한글로 쓰는 표기와는 충돌하므로 기본은 끔).
+핫워드 옵션(--hotwords FILE, 기본 끔, 2차 패스 필요, --word-confidence와 함께 못 씀)을 켜면 모든 연결의 2차
+패스가 greedy 대신 그 목록으로 편향한 top-k CTC prefix beam으로 확정 자막(final의 text)을 낸다(stt_scratch.
+biasing, 규칙 변경 29 측정에서 채택). 메시지 형식과 /info는 바뀌지 않는다(연결별 목록을 받는 WebSocket
+메시지와 /info 표기는 등록대로 두지 않았다. 공개 여부는 사용자 결정).
 텍스트 프레임 "flush"는 스트림을 마무리하고(마지막 부분 청크 + final), 이벤트들 뒤에 다음으로 답한다.
   {"type": "stats", "chunks": n, "compute_ms_p50": ..., "compute_ms_p90": ..., "compute_ms_max": ...}
 (세션 전체의 청크당 계산 시간). "reset"은 새 세션을 시작한다.
@@ -89,8 +93,9 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
 # itn_rules: 숫자 표시 옵션(--itn)의 규칙형 역정규화(stt_scratch.itn.itn). 인자 이름 itn과 겹치지 않게 모듈
-# 이름을 바꿔 가져온다.
+# 이름을 바꿔 가져온다. biasing: 핫워드 옵션(--hotwords)의 목록 파일 읽기·trie·측정에서 고른 보너스.
 from stt_scratch import itn as itn_rules
+from stt_scratch.biasing import SERVICE_BONUS, ContextTrie, read_word_list
 from stt_scratch.evaluate import check_vocab, load_model
 from stt_scratch.model import streaming
 from stt_scratch.model.features import LogMel
@@ -314,7 +319,9 @@ def shown_path(path: Path) -> str:
 # eager 72.5 ms), CPU 1스레드는 fast(44.4 ms < 51.3 ms). word_confidence(기본 False)는 final 이벤트의 어절
 # 신뢰도 옵션으로 final_pass="full"이 아니면 모델을 올리기 전에 ValueError다(신뢰도는 2차 패스에서 쟀다).
 # itn(기본 False)은 final 이벤트에 숫자 표시 문자열(display_text)을 더하는 직렬화 옵션이라 세션에는 넘기지
-# 않는다(인식·확정 텍스트는 그대로).
+# 않는다(인식·확정 텍스트는 그대로). hotwords(기본 None)는 핫워드 목록(어절 문자열들)으로, 주면 어휘를 올린
+# 뒤 ContextTrie 하나를 만들어 모든 세션에 넘긴다(2차 패스를 greedy 대신 편향 빔으로; 규칙 변경 29 측정에서
+# 채택). final_pass="full"이 아니거나 word_confidence와 함께면 모델을 올리기 전에 ValueError다.
 AUTO_STEP_PATH = {"cuda": "graph", "cpu": "fast"}
 
 
@@ -341,12 +348,19 @@ def build_app(
     max_sessions: int = MAX_SESSIONS,
     word_confidence: bool = False,
     itn: bool = False,
+    hotwords: Sequence[str] | None = None,
 ) -> FastAPI:
-    # 허용 목록은 모델을 올리기 전에 검사해 잘못된 패턴이면 바로(첫 요청이 아니라) 실패하게 한다. 어절 신뢰도
-    # 옵션도 같은 이유로 여기서 본다(warm=False면 세션을 첫 연결 때 처음 만들기 때문이다).
+    # 허용 목록은 모델을 올리기 전에 검사해 잘못된 패턴이면 바로(첫 요청이 아니라) 실패하게 한다. 어절 신뢰도·
+    # 핫워드 옵션의 조합도 같은 이유로 여기서 본다(warm=False면 세션을 첫 연결 때 처음 만들기 때문이다).
     hosts = check_allowed_hosts(DEFAULT_ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts)
     if word_confidence and final_pass != "full":
         raise ValueError("word_confidence needs final_pass='full' (it was calibrated on the final pass)")
+    if hotwords is not None and final_pass != "full":
+        raise ValueError("hotwords need final_pass='full' (the biasing applies to the final pass)")
+    if hotwords is not None and word_confidence:
+        raise ValueError(
+            "hotwords cannot be combined with word_confidence (it was calibrated on the greedy final pass)"
+        )
     dev = torch.device(device)
     model, _ = load_model(checkpoint, dev)
     vocab_path = ROOT / "manifests" / "vocab.json"
@@ -356,18 +370,32 @@ def build_app(
     # 다른 글자를 냈다. 순서 차이는 크기로 잡을 수 없으므로 /info의 vocab_sha256으로 어떤 어휘
     # 파일이었는지 남긴다.
     check_vocab(model, vocab)
+    # 핫워드 목록 → trie 하나(측정에서 고른 보너스). 어휘에 없는 음절이 든 어절은 빠지므로 개수를 로그에
+    # 남기고, 쓸 수 있는 어절이 하나도 없으면 2차 패스가 greedy 그대로임을 경고한다(옵션을 켠 쪽이 알아야
+    # 하는 상태이고, 멈출 일은 아니다).
+    context = None
+    if hotwords is not None:
+        context = ContextTrie.from_words(hotwords, vocab, SERVICE_BONUS)
+        log.info(
+            "hotword list: %d entries kept, %d dropped (empty or with syllables outside the vocabulary)",
+            context.entries,
+            len(context.dropped),
+        )
+        if context.entries == 0:
+            log.warning("the hotword list has no usable entry; the final pass stays greedy")
     logmel = LogMel().to(dev)
     spec = ChunkSpec(chunk, left)
     use_amp = (dev.type == "cuda") if amp is None else amp
     step_path = resolve_step_path(step_path, device)
     # 연결마다 같은 설정으로 세션을 만든다(step 경로·2차 패스는 7단계 뒤 후속 옵션, 규칙 변경 26; 어절
-    # 신뢰도는 규칙 변경 28 측정 뒤 옵션). ws 처리기가 이 dict를 그대로 읽으므로 아래에서 step_path를 바꾸면
-    # 이후 연결에 바로 적용된다.
+    # 신뢰도는 규칙 변경 28, 핫워드 목록은 규칙 변경 29 측정 뒤 옵션). ws 처리기가 이 dict를 그대로 읽으므로
+    # 아래에서 step_path를 바꾸면 이후 연결에 바로 적용된다.
     options = {
         "amp": use_amp,
         "step_path": step_path,
         "final_pass": final_pass,
         "word_confidence": word_confidence,
+        "context": context,
     }
     # 예열(session.warm_up): 부분 청크 길이마다 한 번씩 flush해 첫 클라이언트가 새 텐서 모양의 1회성 준비
     # 시간을 겪지 않게 한다. 걸린 시간은 /info의 warm_up_s로 보인다.
@@ -423,7 +451,8 @@ def build_app(
     # 스레드 수, 프레임·세션 상한, 예열 시간(페이지는 word_confidence가 true일 때만 밑줄 선택을 보인다).
     # 페이지가 설정을 표시하고, 측정 스크립트가 서버가 등록한 구성으로 떠 있는지 대조하며 결과 파일에 출처로
     # 남긴다(규칙 변경 24, docs/ai-verification.md 6단계 검토 반영). 값은 앱을 만들 때 한 번 정한다(스레드
-    # 수는 main()이 모델을 올리기 전에 정하므로 예열·세션과 같은 값이다).
+    # 수는 main()이 모델을 올리기 전에 정하므로 예열·세션과 같은 값이다). 핫워드 옵션은 여기에 적지 않는다:
+    # 규칙 변경 29 등록이 WebSocket 문맥 메시지와 /info 표기를 두지 않기로 했고 공개 여부는 사용자 결정이다.
     info = {
         "checkpoint": shown_path(checkpoint),
         "checkpoint_sha256": hashlib.sha256(Path(checkpoint).read_bytes()).hexdigest(),
@@ -601,6 +630,19 @@ def build_parser() -> argparse.ArgumentParser:
         "채택됐지만, 숫자를 한글로 적는 표기(Zeroth·Common Voice 정답)와는 어긋나므로 기본으로 켜지 않는다",
     )
     p.add_argument(
+        "--hotwords",
+        metavar="FILE",
+        default=None,
+        help="핫워드(편향) 목록 파일: UTF-8 텍스트, 한 줄에 어절 하나(고유명사·전문어, 조사 포함 가능), 빈 "
+        "줄과 #으로 시작하는 줄은 무시. 주면 모든 연결의 확정 자막 2차 패스를 greedy 대신 이 목록으로 편향한 "
+        "top-k CTC prefix beam(음절당 보너스 4 nats, beam 8, top-k 10 = 측정에서 고른 구성)으로 디코딩한다"
+        "(기본 끔, --final-pass full 필요, --word-confidence와 함께 못 씀). 어휘에 없는 음절이 든 어절은 "
+        "빼고 개수를 로그에 남긴다. dev 측정(docs/experiments.md 규칙 변경 29; 목록을 정답의 희귀 어절로 "
+        "만들어 실제 사용자 목록보다 낙관적)에서 희귀 어절 정확 일치율 29 %% → 67 %%, CER_ns −6.8포인트, "
+        "2차 패스 p90 GPU 57 ms·CPU 1스레드 158 ms로 채택됐다. 메시지 형식과 /info는 바뀌지 않는다(연결별 "
+        "목록은 등록대로 제공하지 않음). 도움말의 %%는 argparse 형식 문자라 두 번 적었다",
+    )
+    p.add_argument(
         "--threads",
         type=int,
         default=None,
@@ -625,9 +667,20 @@ def main(argv: list[str] | None = None) -> None:
     if not args.checkpoint:
         raise SystemExit("--checkpoint (or STT_CHECKPOINT) is required")
     # 어절 신뢰도는 2차 패스 로짓에서 재고 보정했으므로 2차 패스를 끈 서버에서는 켜지 않는다(모델을 올리기
-    # 전에 멈춘다).
+    # 전에 멈춘다). 핫워드 목록도 2차 패스를 편향하는 것이라 같고, 신뢰도와는 함께 쓰지 않는다(신뢰도의 토큰
+    # 구간은 greedy argmax를 따른다). 목록 파일은 여기서 읽어 없거나 UTF-8이 아니면 모델을 올리기 전에 멈춘다.
     if args.word_confidence and args.final_pass != "full":
         raise SystemExit("--word-confidence needs --final-pass full")
+    if args.hotwords is not None and args.final_pass != "full":
+        raise SystemExit("--hotwords needs --final-pass full")
+    if args.hotwords is not None and args.word_confidence:
+        raise SystemExit("--hotwords cannot be combined with --word-confidence")
+    hotwords = None
+    if args.hotwords is not None:
+        try:
+            hotwords = read_word_list(Path(args.hotwords))
+        except (OSError, UnicodeDecodeError) as e:
+            raise SystemExit(f"--hotwords: cannot read {args.hotwords}: {e}") from None
     try:
         allowed = check_allowed_hosts(allowed_hosts_for(args.host, args.allowed_host))
     except ValueError as e:
@@ -671,6 +724,7 @@ def main(argv: list[str] | None = None) -> None:
         allowed_hosts=allowed,
         word_confidence=args.word_confidence,
         itn=args.itn,
+        hotwords=hotwords,
     )
     uvicorn.run(
         app,

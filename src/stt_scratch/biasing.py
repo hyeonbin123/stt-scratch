@@ -3,7 +3,9 @@
 끝점 뒤 2차 패스(service.session.StreamSession(final_pass="full"))의 전체 문맥 log-prob에서, 사용자가 준 편향
 목록(고유명사·전문어 같은 어절)이 확정 자막에 나오도록 돕는 디코더다. 목록이 비면 이 모듈을 쓰지 않고 greedy
 그대로다(model/decode.biased_batch). 등록 규칙은 docs/experiments.md 규칙 변경 29("확정 자막 핫워드 문맥 편향"
-절), 평가 도구는 scripts/bias_eval.py다.
+절), 평가 도구는 scripts/bias_eval.py다. 2026-11-02 측정에서 채택돼 서버 옵션(service/server.py --hotwords,
+기본 끔: 목록 파일 → read_word_list → ContextTrie.from_words(SERVICE_BONUS) → StreamSession(context=...))으로
+붙었다. 서버 기본값은 greedy 그대로다.
 
   목록   어절마다 학습 정규화(text.normalize_train) → 공백 제거 → 음절 id 열. 어휘에 없는 음절(<unk>)이 든
          어절은 모델이 낼 수 없어 뺀다(dropped)
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 
 import numpy as np
 
@@ -46,6 +49,14 @@ from stt_scratch.text import Vocab, normalize_train
 NEG_INF = float("-inf")
 ROOT = 0  # 어절 시작에서 일치를 기다리는 상태(trie 뿌리 노드 번호)
 DEAD = -1  # 어절 가운데서 일치가 끊긴 상태: 다음 공백까지 새 일치를 시작하지 않는다
+
+# 서비스 옵션(service/server.py --hotwords)이 쓰는 구성 = docs/experiments.md 규칙 변경 29 측정의 절반 A
+# 선택(reports/followup/biasing.json selection.chosen, 2026-11-02): 음절당 보너스 b = 4 nats, beam 8, 프레임당
+# 후보 top-k 10(덤프가 남긴 폭 = 격자 top_k). 손으로 옮겨 적은 값이라 tests/test_biasing.py가 결과 파일과
+# 대조한다. 측정된 구성만 제공하고 명령행에서 바꾸는 손잡이는 두지 않는다(다른 값은 판정받지 않았다).
+SERVICE_BONUS = 4.0
+SERVICE_BEAM = 8
+SERVICE_TOP_K = 10
 
 # 접두사 하나의 문맥 상태: (trie 노드 또는 ROOT·DEAD, 보류 보너스, 확정 보너스). 보너스는 nats(log 확률과 같은
 # 단위)다.
@@ -145,6 +156,21 @@ class ContextTrie:
         """디코딩 끝(= 어절 경계)의 보너스: 완결 어절이면 보류분까지 확정, 아니면 보류분을 회수한다."""
         node, pending, locked = state
         return locked + pending if node > ROOT and self.terminal[node] else locked
+
+
+# 서버 옵션 --hotwords의 목록 파일 읽기. UTF-8 텍스트(Windows 편집기가 붙이는 BOM 허용), 한 줄에 어절(띄어 쓴
+# 구도 됨: trie는 공백을 빼고 본다) 하나. 앞뒤 공백을 지우고 빈 줄과 '#'으로 시작하는 줄(주석)은 건너뛴다.
+# 정규화·어휘 검사는 ContextTrie.from_words가 하므로 여기서는 문자열만 돌려준다(같은 어절이 여러 줄에 있어도
+# trie에서는 한 항목이다). 없는 파일·UTF-8이 아닌 파일은 OSError·UnicodeDecodeError를 그대로 올린다(서버
+# 명령행이 모델을 올리기 전에 SystemExit로 바꾼다).
+def read_word_list(path: Path) -> list[str]:
+    """목록 파일의 항목(빈 줄·주석 제외, 앞뒤 공백 제거)을 파일 순서대로 돌려준다."""
+    words: list[str] = []
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        entry = line.strip()
+        if entry and not entry.startswith("#"):
+            words.append(entry)
+    return words
 
 
 # top-k CTC prefix beam search. 입력은 한 세그먼트의 프레임별 상위 k (토큰 id, log 확률)와 blank log 확률로,
