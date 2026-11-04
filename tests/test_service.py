@@ -6,9 +6,10 @@
 수), 명령행 실행이 uvicorn에 넘기는 전송 상한과 경고, CSP 해시, 서버 예열, 서버 상태 보고(/info의 어휘
 SHA-256·torch 스레드 수·CUDA Graph 캡처 상태, 캡처 실패 시 fast 폴백), 어휘 크기 검사, CPU 장치의 기본
 1스레드, 2차 패스를 켰을 때만 확정 이벤트에 붙는 stream_text, 어절 신뢰도 옵션(켰을 때만 final에 words가
-붙고 인식 결과는 그대로, 2차 패스 없이는 켜지 않음), 숫자 표시 옵션(켰을 때만 final에 display_text =
-itn(text)), 핫워드 옵션(켰을 때만 확정 자막이 측정 경로와 같은 편향 디코딩이고 메시지 형식·/info는 그대로,
-2차 패스 없이나 어절 신뢰도와 함께는 켜지 않음).
+붙고 2차 패스 결과가 빈 endpoint에는 붙지 않으며 인식 결과는 그대로, 2차 패스 없이는 켜지 않음), 숫자 표시
+옵션(켰을 때만 final에 display_text = itn(text)), 핫워드 옵션(켰을 때만 확정 자막이 측정 경로와 같은 편향
+디코딩이고 메시지 형식·/info는 그대로, 2차 패스 없이나 어절 신뢰도와 함께는 켜지 않음, 목록 파일이 없거나
+UTF-8이 아니면 모델을 올리기 전에 멈춤, 명령행 실행은 남긴·뺀 어절 수를 표준 오류에 찍음).
 """
 
 # [방식] 작은 모델(d=32, 2층)과 8토큰 어휘로 CPU에서 돌린다. 서버는 실제 포트에 띄우지 않고 FastAPI
@@ -22,6 +23,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import subprocess
+import sys
 
 # FastAPI TestClient: 프로세스 안에서 HTTP·WebSocket 요청을 앱에 바로 보내는 시험용 클라이언트. starlette
 # WebSocketDisconnect: 서버가 연결을 닫았는지(종료 코드 포함) 확인할 때 쓴다. WebSocketDenialResponse: 수락
@@ -270,11 +274,12 @@ def test_page_csp_hashes_match_the_inline_blocks() -> None:
 # 읽으므로 ROOT를 잠시 tmp_path로 바꾸고 finally로 되돌린다. device는 build_app에 넘기는 장치 문자열(CUDA 전용
 # 테스트가 "cuda"를 준다), vocab은 저장할 어휘(어휘 크기 검사 테스트가 모델과 다른 크기를 준다).
 # kwargs(allowed_hosts·max_frame_bytes·max_sessions·warm·step_path 등)는 그대로 넘긴다. 같은 tmp_path로
-# 여러 번 불러도 된다(파일을 덮어쓴다).
-def make_app(tmp_path, device: str = "cpu", vocab: Vocab = VOCAB, **kwargs):
+# 여러 번 불러도 된다(파일을 덮어쓴다). model을 주면 tiny_model() 대신 그 모델을 체크포인트로 저장한다(출력을
+# 일부러 기울인 모델로 특정 이벤트를 만들 때).
+def make_app(tmp_path, device: str = "cpu", vocab: Vocab = VOCAB, model=None, **kwargs):
     from stt_scratch.service import server
 
-    model = tiny_model()
+    model = tiny_model() if model is None else model
     ckpt = tmp_path / "m.pt"
     torch.save({"model": model.state_dict(), "config": model.cfg.__dict__}, ckpt)
     (tmp_path / "manifests").mkdir(exist_ok=True)
@@ -534,6 +539,57 @@ def test_word_confidence_option_adds_words_to_final_events_only(tmp_path) -> Non
     assert same_part(got_on) == same_part(got_off)
 
 
+# 확인: 어절 신뢰도 옵션을 켜도 2차 패스 결과가 빈 세그먼트를 닫는 endpoint 이벤트에는 words·confidence_ms가
+# 붙지 않는다(세션 이벤트의 words는 None·confidence_ms 0.0, 서버 메시지에는 두 키가 없음). 입력: 출력층의
+# blank 편향을 크게 올려 스트리밍·2차 패스 모두 blank만 내는 작은 모델에 6 s 잡음을 흘리면, 토큰 없이 2.4 s가
+# 지나 rule1 endpoint가 두 번 나고 그때마다 2차 패스가 빈 텍스트를 낸다. 왜: 2차 패스는 결과가 비어도 어절
+# 신뢰도를 계산해 빈 목록을 남기므로, 세션이 그 값을 종류와 상관없이 실으면 endpoint에 "words": []와 계산
+# 시간이 붙는다. 위 테스트의 무작위 입력은 그런 endpoint를 만들지 않아 이 갈래를 시험하지 못했다.
+def test_word_confidence_stays_off_endpoint_events(tmp_path) -> None:
+    model = tiny_model()
+    with torch.no_grad():
+        model.out_proj.bias[VOCAB.blank_id] += 30.0
+    g = torch.Generator().manual_seed(4)
+    wav = torch.randn(6 * 16000, generator=g) * 0.06
+    session = StreamSession(
+        model,
+        VOCAB,
+        ChunkSpec(8, 64),
+        LogMel(),
+        EndpointConfig(),
+        False,
+        final_pass="full",
+        word_confidence=True,
+    )
+    events = []
+    for i in range(0, wav.numel(), 5120):
+        events.extend(session.push_samples(wav[i : i + 5120]))
+    events.extend(session.flush())
+    endpoints = [e for e in events if e.kind == "endpoint"]
+    assert len(endpoints) >= 2 and all(e.rule == "rule1" and e.text == "" for e in endpoints)
+    assert all(e.words is None and e.confidence_ms == 0.0 for e in endpoints)
+
+    client = TestClient(
+        make_app(
+            tmp_path,
+            model=model,
+            warm=False,
+            step_path="fast",
+            final_pass="full",
+            word_confidence=True,
+            allowed_hosts=["testserver"],
+        )
+    )
+    pcm = (wav * 32767).clamp(-32768, 32767).to(torch.int16).numpy().tobytes()
+    with client.websocket_connect("/ws") as ws:
+        for i in range(0, len(pcm), 10240):
+            ws.send_bytes(pcm[i : i + 10240])
+        ws.send_text("flush")
+        got = read_until_stats(ws)
+    closes = [m for m in got if m["type"] == "endpoint"]
+    assert len(closes) >= 2 and all("words" not in m and "confidence_ms" not in m for m in closes)
+
+
 # 확인: 어절 신뢰도 옵션은 2차 패스가 있어야 한다. 세션(StreamSession)과 앱(build_app, 모델을 올리기 전)은
 # final_pass none과 함께 주면 ValueError, 명령행은 --final-pass none과 함께 주면 SystemExit로 멈추고, 명령행
 # 기본은 끔이며 --word-confidence를 주면 build_app에 그대로 넘긴다. 왜: 신뢰도와 보정은 2차 패스 로짓에서
@@ -649,9 +705,9 @@ def test_hotword_context_biases_the_final_pass_like_the_measurement_path() -> No
 # 자막(partial)과 세그먼트를 닫는 이벤트의 종류·세그먼트 번호·규칙·프레임 수·stream_text·메시지 키가 같으며
 # (새 필드 없음), 바뀌는 것은 확정 텍스트만이다(이 PCM에서 실제로 달라진다). 명령행: --hotwords는 파일을 읽어
 # build_app에 어절 목록으로 넘기고(빈 줄·주석 제외), 기본은 None, --final-pass none이나 --word-confidence와
-# 함께 주면 모델을 올리기 전에 멈추며, 없는 파일도 멈춘다. build_app도 같은 조합을 모델을 올리기 전에
-# 거부한다. 왜: 등록(docs/experiments.md 규칙 변경 29)대로 옵션은 서버 기본값·WebSocket 프로토콜·/info를
-# 바꾸지 않아야 한다(연결별 목록 메시지와 /info 표기는 사용자 결정).
+# 함께 주면 모델을 올리기 전에 멈추며, 없는 파일과 UTF-8이 아닌 파일도 멈춘다. build_app도 같은 조합을
+# 모델을 올리기 전에 거부한다. 왜: 등록(docs/experiments.md 규칙 변경 29)대로 옵션은 서버 기본값·WebSocket
+# 프로토콜·/info를 바꾸지 않아야 한다(연결별 목록 메시지와 /info 표기는 사용자 결정).
 def test_hotwords_option_changes_only_the_final_text(tmp_path, monkeypatch) -> None:
     from stt_scratch.service import server
 
@@ -698,12 +754,63 @@ def test_hotwords_option_changes_only_the_final_text(tmp_path, monkeypatch) -> N
         server.main(["--hotwords", str(path), "--word-confidence"])
     with pytest.raises(SystemExit, match="cannot read"):
         server.main(["--hotwords", str(tmp_path / "missing.txt")])
+    # UTF-8이 아닌 목록 파일(Windows 메모장의 옛 기본 인코딩 cp949로 저장한 한국어)도 모델을 올리기 전에 같은
+    # SystemExit로 멈춘다(UnicodeDecodeError가 그대로 새어 나가지 않음).
+    legacy = tmp_path / "hotwords-cp949.txt"
+    legacy.write_bytes("가마\n나다\n".encode("cp949"))
+    with pytest.raises(SystemExit, match="cannot read"):
+        server.main(["--hotwords", str(legacy)])
     assert seen == []  # 모델을 올리기 전에 멈췄다
     server.main([])
     server.main(["--hotwords", str(path)])
     assert [k["hotwords"] for k in seen] == [None, ["가마", "나다"]]
     # 도움말이 렌더링된다(argparse는 help를 %-형식으로 펼치므로 '%'가 든 도움말은 이 호출에서 깨진다).
     assert "--hotwords" in server.build_parser().format_help()
+
+
+# 확인: 명령행 실행에서 핫워드 목록의 남긴·뺀 어절 수가 실제로 표준 오류에 한 번 찍힌다. 로깅을 설정하지 않은
+# 새 파이썬 프로세스에서 server.main을 부른다(server.ROOT는 작은 모델·어휘를 둔 tmp_path, uvicorn.run만
+# 아무것도 하지 않는 함수로 바꿔 포트는 열지 않음; 모델을 올리고 예열하는 build_app은 그대로 돈다). 목록은
+# 어휘 안 어절 둘('가마'·'나다')과 어휘 밖 어절 하나('abc')다. 같은 실행에서 루프백 밖 바인드 경고(WARNING)도
+# 전처럼 한 번만 찍히는지 본다(처리기가 둘로 겹쳐 같은 줄이 두 번 나오지 않음). 왜: 개수 줄은 INFO인데
+# build_app이 uvicorn의 로깅 설정보다 먼저 돌고, 처리기가 없을 때 쓰이는 파이썬 기본
+# 처리기(logging.lastResort)는 WARNING 이상만 찍어서 도움말·README가 말하는 '시작 로그의 개수'가 명령행
+# 실행에서는 나오지 않았다. 목록은 /info에 나오지 않으므로 이 줄이 옵션이 켜졌는지와 몇 어절이 빠졌는지를
+# 운영자가 보는 곳이다. caplog는 잡을 수준을 스스로 낮추므로 이 문제를 보지 못해 별도 프로세스의 표준 오류로
+# 확인한다.
+def test_command_line_prints_the_hotword_counts(tmp_path) -> None:
+    model = tiny_model()
+    torch.save({"model": model.state_dict(), "config": model.cfg.__dict__}, tmp_path / "m.pt")
+    (tmp_path / "manifests").mkdir()
+    VOCAB.save(tmp_path / "manifests" / "vocab.json")
+    words = tmp_path / "hotwords.txt"
+    words.write_text("가마\n나다\nabc\n", encoding="utf-8")
+    runner = tmp_path / "run_main.py"
+    runner.write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from stt_scratch.service import server\n"
+        "server.ROOT = Path(sys.argv[1])\n"
+        "server.uvicorn.run = lambda app, **kwargs: None\n"
+        "server.main(sys.argv[2:])\n",
+        encoding="utf-8",
+    )
+    args = ["--checkpoint", "m.pt", "--device", "cpu", "--left", "64", "--hotwords", str(words)]
+    args += ["--host", "0.0.0.0"]
+    # CUDA_VISIBLE_DEVICES=-1: 하위 프로세스가 GPU를 잡지 않게 한다(--device cpu와 같은 뜻이지만, 인자
+    # 기본값을 정할 때 부르는 torch.cuda.is_available()도 GPU를 보지 않게).
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "-1", "PYTHONIOENCODING": "utf-8"}
+    run = subprocess.run(
+        [sys.executable, str(runner), str(tmp_path), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=600,
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.stderr.count("hotword list: 2 entries kept, 1 dropped") == 1, run.stderr
+    assert run.stderr.count("is not a loopback address") == 1, run.stderr
 
 
 # 확인: 어휘 파일의 토큰 수가 체크포인트의 출력 크기(ModelConfig.vocab_size)와 다르면 evaluate.check_vocab과

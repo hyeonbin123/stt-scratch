@@ -68,7 +68,7 @@ from __future__ import annotations
 
 # base64·hashlib: CSP용 인라인 블록 SHA-256 해시와 /info의 체크포인트 SHA-256. re: 페이지에서 인라인 블록을
 # 찾고 Origin을 비교. os: STT_CHECKPOINT 환경 변수. ipaddress: Host 허용 목록의 IP 표기 정규화와 루프백 판정.
-# logging: 루프백 밖에 열 때의 시작 경고.
+# logging: 시작 로그(루프백 밖에 열 때 등의 경고와 핫워드 목록의 어절 수), sys: 그 처리기가 쓰는 stderr.
 import argparse
 import base64
 import hashlib
@@ -148,9 +148,38 @@ MAX_SESSIONS = 8
 # uvicorn limit_concurrency: 열린 연결(HTTP keep-alive와 WebSocket 포함)이나 처리 중인 작업이 이 수에 닿으면
 # 새 HTTP 요청에 503을 낸다. 세션 상한(8)보다 크게 두어 세션이 다 차도 페이지와 /info는 열린다.
 LIMIT_CONCURRENCY = 16
-# 시작 경고용 로거(인증 없는 서버를 루프백 밖에 열 때, Host 검사를 끌 때). uvicorn이 로깅을 설정하기 전에
-# 남기므로 처리기가 없으면 파이썬 기본 처리기(logging.lastResort)가 stderr에 쓴다.
+# 시작 로그용 로거: 경고(인증 없는 서버를 루프백 밖에 열 때, Host 검사를 끌 때, 그래프 캡처 실패, 쓸 수 있는
+# 핫워드가 없을 때, WebSocket을 오류 코드로 닫을 때)와 핫워드 목록의 남긴·뺀 어절 수(INFO). 명령행 실행은
+# main()이 맨 먼저 show_startup_log()로 이 로거에 처리기를 달아 INFO부터 stderr에 찍는다. 앱만 만드는 경우
+# (테스트처럼 build_app을 직접 부름)에는 처리기를 달지 않으므로, 처리기가 없으면 파이썬 기본 처리기
+# (logging.lastResort, WARNING 이상만)가 stderr에 쓴다.
 log = logging.getLogger("stt_scratch.service.server")
+
+
+# 시작 로그 처리기: 이 로거의 기록을 쓰는 그 순간의 sys.stderr에 메시지 그대로 쓴다(logging.lastResort와 같은
+# 모양이라 경고 줄의 모양은 전과 같다). 왜: 명령행 실행에서 build_app은 uvicorn이 로깅을 설정하기 전에 돌고,
+# 처리기가 없으면 lastResort가 WARNING 이상만 찍어서 핫워드 목록의 남긴·뺀 어절 수(INFO)가 보이지 않았다. 그
+# 목록은 /info에 나오지 않으므로 이 줄이 옵션이 켜졌는지 운영자가 확인하는 곳이다. 왜 루트 로거
+# 설정(logging.basicConfig)이 아닌가: 루트를 INFO로 두면 다른 라이브러리의 INFO까지 찍힌다. 왜 스트림을
+# 고정하지 않는가: logging.StreamHandler는 만들 때의 sys.stderr를 잡아 두므로, sys.stderr를 바꿔 끼우는
+# 환경(테스트의 출력 가로채기)에서는 닫힌 스트림에 쓰게 된다. uvicorn은 시작할 때 dictConfig로 자기 로거만
+# 설정하고(disable_existing_loggers False) 이 로거와 처리기는 건드리지 않으므로, 서버가 도는 동안의 경고도 이
+# 처리기로 나간다.
+class _CurrentStderrHandler(logging.StreamHandler):
+    def __init__(self) -> None:
+        # StreamHandler.__init__은 스트림을 속성에 고정하므로 Handler만 초기화한다(스트림은 아래 속성).
+        logging.Handler.__init__(self)
+
+    @property
+    def stream(self):
+        return sys.stderr
+
+
+def show_startup_log() -> None:
+    """이 모듈의 로거가 INFO부터 stderr에 찍게 한다(명령행 실행용). 여러 번 불러도 처리기는 하나만 단다."""
+    if not any(isinstance(h, _CurrentStderrHandler) for h in log.handlers):
+        log.addHandler(_CurrentStderrHandler())
+    log.setLevel(logging.INFO)
 
 
 # CSP의 해시 출처 형식('sha256-<base64>')으로 인라인 블록 내용의 SHA-256을 만든다.
@@ -655,14 +684,17 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-# 명령행 실행: 인자를 읽어 옵션 조합(--word-confidence는 --final-pass full에서만)과 Host 허용 목록을 검사하고
-# (잘못된 조합·패턴은 모델을 올리기 전에 거부), torch 연산 스레드 수를 정하고(--threads, CPU 장치 기본 1),
-# 인증 없는 서버를 루프백 밖에 열거나 Host 검사를 끄면 경고를 남긴 뒤, 앱을 만들어 uvicorn으로 띄운다.
-# uvicorn에는 WebSocket 메시지 상한(ws_max_size = MAX_FRAME_BYTES, 넘으면 전송 계층이 오류 줄 없이 1009로
-# 닫음)과 동시 연결·작업 상한(limit_concurrency, 넘으면 새 HTTP 요청에 503)을 함께 넘긴다. ping 간격·시간
-# 제한은 uvicorn 기본(20 s) 그대로다. 경고는 uvicorn이 로깅을 설정하기 전에 나가므로 파이썬 기본
-# 처리기(stderr)가 찍는다.
+# 명령행 실행: 먼저 시작 로그 처리기를 달고(show_startup_log: 이 로거의 INFO 이상을 stderr에), 인자를 읽어
+# 옵션 조합(--word-confidence와 --hotwords는 --final-pass full에서만, 둘은 함께 못 씀)을 검사하고 --hotwords
+# 목록 파일을 읽은 뒤(없거나 UTF-8이 아니면 멈춤) Host 허용 목록을 검사한다(잘못된 조합·패턴·파일은 모델을
+# 올리기 전에 거부). 이어 torch 연산 스레드 수를 정하고(--threads, CPU 장치 기본 1), 인증 없는 서버를 루프백
+# 밖에 열거나 Host 검사를 끄면 경고를 남긴 뒤, 앱을 만들어 uvicorn으로 띄운다. uvicorn에는 WebSocket 메시지
+# 상한(ws_max_size = MAX_FRAME_BYTES, 넘으면 전송 계층이 오류 줄 없이 1009로 닫음)과 동시 연결·작업
+# 상한(limit_concurrency, 넘으면 새 HTTP 요청에 503)을 함께 넘긴다. ping 간격·시간 제한은 uvicorn 기본(20 s)
+# 그대로다. 경고와 핫워드 개수 줄은 uvicorn이 로깅을 설정하기 전에 나가므로 시작 로그 처리기가 찍는다(전에는
+# 처리기가 없어 파이썬 기본 처리기가 경고만 찍고 INFO인 개수 줄은 버려졌다).
 def main(argv: list[str] | None = None) -> None:
+    show_startup_log()
     args = build_parser().parse_args(argv)
     if not args.checkpoint:
         raise SystemExit("--checkpoint (or STT_CHECKPOINT) is required")
