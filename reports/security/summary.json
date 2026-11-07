@@ -372,5 +372,89 @@
    "commits": 81,
    "leaks": 0
   }
+ },
+ "recheck_2026_11_07": {
+  "reason": "final-caption options --word-confidence, --itn and --hotwords (all off by default) and the start-up log handler for the hotword counts; page HTML (underline choice, display_text / per-word rendering, recomputed CSP hashes) and the /info keys word_confidence and itn; CI audit job added",
+  "server_args": "--device cpu --allowed-host host.docker.internal --port 8098",
+  "server_info": {
+   "device": "cpu",
+   "precision": "fp32",
+   "step_path": "fast",
+   "final_pass": "full",
+   "cpu_threads": 1,
+   "word_confidence": false,
+   "itn": false,
+   "warm_up_s": 11.04,
+   "rule2_s": 0.8
+  },
+  "zap": {
+   "version": "2.17.0",
+   "baseline": [
+    {
+     "alert": "Modern Web Application",
+     "risk": "Informational (Medium)",
+     "count": 1
+    },
+    {
+     "alert": "Non-Storable Content",
+     "risk": "Informational (Medium)",
+     "count": 2
+    }
+   ],
+   "api": [
+    {
+     "alert": "Unexpected Content-Type was returned",
+     "risk": "Low (High)",
+     "count": 2
+    },
+    {
+     "alert": "A Client Error response code was returned by the server",
+     "risk": "Informational (High)",
+     "count": 9
+    },
+    {
+     "alert": "Non-Storable Content",
+     "risk": "Informational (Medium)",
+     "count": 2
+    }
+   ],
+   "note": "alert kinds and risks are the same as on 2026-10-29; only the baseline Non-Storable Content count is 2 instead of 3 (/robots.txt, still answered 404 with no-store, was not counted this time); the cloud metadata rule's 7 paths again get 400 from the Host allow list"
+  },
+  "bandit": {
+   "high": 0,
+   "medium": 1,
+   "low": 66,
+   "by_test": {
+    "B101 LOW": 5,
+    "B104 MEDIUM": 1,
+    "B105 LOW": 19,
+    "B106 LOW": 3,
+    "B107 LOW": 2,
+    "B311 LOW": 5,
+    "B404 LOW": 9,
+    "B603 LOW": 14,
+    "B607 LOW": 9
+   },
+   "medium_note": "B104 on the WILDCARD_BIND_HOSTS comparison constant in server.py (false positive, same as 2026-10-29)"
+  },
+  "pip_audit": {
+   "packages_locked": 75,
+   "packages_audited": 75,
+   "lists": [
+    73,
+    2
+   ],
+   "command": "same as the CI audit job (all groups, markers and +cu128 removed, second versions in a second list, --strict); also run against OSV",
+   "vulnerable": [
+    "setuptools 81.0.0 PYSEC-2026-3447 (fix 83.0.0)",
+    "setuptools 81.0.0 GHSA-xmj3-9gf7-h52w (fix 84.1.0)",
+    "torch 2.11.0 PYSEC-2025-194 (fix 2.13.0)"
+   ],
+   "osv_only": []
+  },
+  "gitleaks": {
+   "commits": 107,
+   "leaks": 0
+  }
  }
 }

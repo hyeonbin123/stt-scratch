@@ -66,6 +66,15 @@
 - 확인만 하는 것(판정에 쓰지 않음): 정보 경보(Modern Web Application, Non-Storable Content, Client Error)의 종류·건수, 클라우드 메타데이터 규칙 경로의 응답 코드(10-29는 Host 허용 목록 거부 400), bandit Low 건수와 종류의 변화(옵션 모듈 `biasing.py`·`confidence.py`·`itn.py`가 늘렸을 수 있음), 서버 예열 시간, ZAP 판, 스캔 중 PC의 다른 부하(ZAP은 HTTP 경로만 보므로 결과와 무관)
 - 결과: `reports/security/zap-{baseline,api}-2026-11-07.md`(ZAP 출력 그대로), `reports/security/summary.json`에 `recheck_2026_11_07` 키 추가(기존 키는 그대로), 이 절 아래 '결과' 소절
 
+### 결과 (2026-11-07, 규칙대로 1회)
+대상 코드 a389217(추적 파일 변경 없음; 서비스 코드의 마지막 변경 c024c71), 서버 `--device cpu --allowed-host host.docker.internal --port 8098`, `/info`: device cpu, fp32, step_path fast, final_pass full, rule2 0.8 s, cpu_threads 1, word_confidence false, itn false(규칙의 대조 값과 같음), 예열 11.04 s. 스캔 중 다른 프로그램이 GPU·CPU를 쓰고 있었다(ZAP은 HTTP 경로만 보므로 결과와 무관).
+
+- **OWASP ZAP 2.17.0**: 기본 스캔 Medium·Low 0건(정보 2종: Modern Web Application 1건(Informational (Medium)), Non-Storable Content 2건(Informational (Medium))), API 스캔 High·Medium 0건, Low 1종(Unexpected Content-Type was returned 2건(Low (High)); 10-14부터 같은 오탐), 정보 2종(A Client Error response code was returned by the server 9건(Informational (High)), Non-Storable Content 2건(Informational (Medium))). 경보 종류와 위험도는 10-29와 같다. 건수는 기본 스캔의 Non-Storable Content만 3 → 2로 다르다(10-29에는 `/`·`/robots.txt`·`/sitemap.xml`, 이번에는 `/`·`/sitemap.xml`; 서버 로그에서 `/robots.txt`도 10-29처럼 404로 응답했고 모든 응답에 `Cache-Control: no-store`가 붙으므로 수동 규칙이 그 응답을 세지 않은 차이일 뿐이다. 정보 경보라 판정에 쓰지 않는다). 서버 로그의 응답 코드는 200 29건, 307 2건, 400 13건, 404 5건이고 5xx 0건·트레이스백 0건. 400은 모두 Host 허용 목록이 거부한 클라우드 메타데이터 규칙의 요청이다(7경로, 10-29와 같은 동작). 307 2건은 `/info/`·`/openapi.json/`처럼 끝에 `/`를 붙인 요청을 Starlette 라우터가 원래 경로로 돌려보낸 것(기본 동작)이고, 404는 `/robots.txt`·`/sitemap.xml`·`/actuator/health`·무작위 경로다. 보고서 `reports/security/zap-{baseline,api}-2026-11-07.md`
+- **bandit 1.9.4**: High 0건, Medium 1건(10-29와 같은 `server.py` `WILDCARD_BIND_HOSTS` 비교 상수의 B104 오탐), Low 66건(10-29 43건 → +23: 옵션 코드가 2차 패스 값 `"full"`을 비교하는 줄 B105 19건(10-29 9건)과, 측정 도구의 고정 인자 `git` 하위 프로세스 B404·B603·B607 9·14·9건(10-29 6·9·4건; `scripts/stage6.py`의 코드 커밋 기록, `scripts/confidence_eval.py`, `scripts/final_pass_dump.py`). 모두 10-18·10-29와 같은 종류라 그대로 둔다)
+- **pip-audit 2.10.1**: 위 '다시 돌리는 방법'의 2026-11-07 명령(CI audit 단계와 같은 대조): 잠금 75개 = 대조 75개, 받아들인 세 권고(setuptools 81.0.0 PYSEC-2026-3447·GHSA-xmj3-9gf7-h52w, torch 2.11.0 PYSEC-2025-194) 밖 0건. OSV 데이터베이스로도 같은 세 권고뿐
+- **gitleaks 8.30.1**: 커밋 107개(약 38.7 MB)에서 비밀 정보 0건
+- **판정**: 통과 조건 (가)~(마)를 모두 충족한다. 서비스 코드·기본값·기록 수치는 바꾸지 않았다
+
 ## 다시 돌리는 방법
 
 2026-10-24부터 서버에 Host 허용 목록이 있어, Docker 컨테이너의 ZAP이 붙는 이름 `host.docker.internal`을 `--allowed-host`로 더해야 한다(아니면 모든 요청이 400으로 거부된다). ZAP은 HTTP 경로만 보므로 모델 장치는 결과와 무관하고, 점검 중 GPU를 비워 두려면 `--device cpu`로 띄운다.
