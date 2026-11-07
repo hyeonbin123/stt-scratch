@@ -21,13 +21,14 @@
 # 충족), H6.3 충족, rule2 1.2 s, 끝점 뒤 캐시 유지.
 # [연결] 측정 모델은 4단계 채택 모델(outputs/stage4/trimtail/avg10.pt; docstring 사용법 예시의 control 경로는
 # 판정 전 작성된 예). README의 6단계 명령에서 하위 명령별로 실행한다. 결과 파일마다 체크포인트
-# SHA-256·구성·부분집합 여부(limit)를 남기고, 7단계(scripts/stage7.py)는 h61.json의 이 값들을 확인한 뒤에만
-# 시작한다.
+# SHA-256·구성·부분집합 여부(limit)를 남기고(2026-11-07부터 코드 커밋 git_head·git_dirty도), 7단계
+# (scripts/stage7.py)는 h61.json의 이 값들을 확인한 뒤에만 시작한다.
 
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -499,11 +500,35 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-# 하위 명령을 실행하고 결과에 체크포인트 경로·SHA-256·장치·구성·limit·소요 시간을 붙여 저장한다. 같은
-# 체크포인트·구성·전수일 때만 결과를 다시 쓰거나 7단계 사전 검사에서 통과로 보게 하려는 출처 기록이다(규칙
-# 변경 24·25). 결과 파일이 이미 있어도 덮어쓰므로 등록 결과와 다른 측정은 --name으로 이름을 바꾼다.
+# 측정을 시작할 때의 코드 커밋. git_head = `git rev-parse HEAD`, git_dirty = 추적 파일에 커밋하지 않은 변경이
+# 있는지(`git status --porcelain --untracked-files=no`; 미추적 파일은 셈하지 않음). git이 없거나 ROOT가 저장소
+# 밖이면 둘 다 None이다. scripts/followup.py provenance·scripts/confidence_eval.py와 같은 두 필드다. 왜: 규칙
+# 변경 27(서버 기본값의 종단·드리프트·연속 음성 측정)은 결과마다 체크포인트 SHA-256과 코드 커밋을 남기기로
+# 했는데, 이 도구의 결과 파일(drift 등)에는 체크포인트 SHA-256만 있었다(2026-11-02 drift-defaults.json).
+def git_state() -> dict:
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return {"git_head": None, "git_dirty": None}
+    return {"git_head": head, "git_dirty": bool(status)}
+
+
+# 하위 명령을 실행하고 결과에 체크포인트 경로·SHA-256·코드 커밋(git_head·git_dirty, 시작할 때 값)·장치·구성·
+# limit·소요 시간을 붙여 저장한다. 같은 체크포인트·구성·전수일 때만 결과를 다시 쓰거나 7단계 사전 검사에서
+# 통과로 보게 하려는 출처 기록이다(규칙 변경 24·25; 코드 커밋은 규칙 변경 27의 공통 조건). 결과 파일이 이미
+# 있어도 덮어쓰므로 등록 결과와 다른 측정은 --name으로 이름을 바꾼다.
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    code = git_state()
     device = torch.device(args.device)
     model, _ = load_model(ROOT / args.checkpoint, device)
     vocab = Vocab.load(ROOT / "manifests" / "vocab.json")
@@ -518,6 +543,7 @@ def main(argv: list[str] | None = None) -> None:
         {
             "checkpoint": args.checkpoint,
             "checkpoint_sha256": hashlib.sha256((ROOT / args.checkpoint).read_bytes()).hexdigest(),
+            **code,
             "device": str(device),
             "spec": f"chunk{args.chunk} left{args.left}",
             "limit": args.limit,

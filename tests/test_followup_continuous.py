@@ -6,7 +6,8 @@ docs/experiments.md 규칙 변경 27의 (B)·(C)를 재는 도구다. 확인하�
 정답을 공백으로 잇는다, (3) cmd_continuous가 작은 무작위 모델로 끝까지 돌아 조건마다 스트림 수, 1-pass
 (stream_text 이음)·2-pass(확정 텍스트 이음) 가설, 규칙별 세그먼트 수를 맞게 기록하고 서버 명령행 기본 구성을
 쓴다, (4) drift의 --step-path·--final-pass·--warm-up이 세션에 전달되고 기본값은 이전 동작(eager, 2차 패스
-없음, 예열 없음, rule2 1.2 s, 캐시 초기화)이다.
+없음, 예열 없음, rule2 1.2 s, 캐시 초기화)이다, (5) stage6.py 결과 파일에 체크포인트 SHA-256과 함께 측정 때의
+코드 커밋(git_head·git_dirty)이 남는다.
 """
 
 # [방식] tests/test_service.py와 같은 작은 무작위 모델(d=32, 2층)과 8토큰 어휘로 CPU에서 돈다. 두 스크립트의
@@ -16,8 +17,10 @@ docs/experiments.md 규칙 변경 27의 (B)·(C)를 재는 도구다. 확인하�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -266,3 +269,32 @@ def test_drift_passes_the_step_path_and_final_pass(fake_root, monkeypatch) -> No
     assert out["warm_up_s"] is not None and out["warm_up_s"] > 0
     closes = sum(out["closes_by_rule"].values())
     assert closes >= 1 and out["final_pass_ms"]["n"] == closes and out["final_pass_ms"]["p50"] > 0
+
+
+# 확인: stage6.py가 쓰는 결과 파일(여기서는 drift)에 체크포인트 SHA-256과 함께 측정 때의 코드 커밋(git_head·
+# git_dirty)이 남고, 그 값이 같은 폴더에서 git으로 직접 물은 값과 같다(git 저장소 밖이면 둘 다 None). 가짜
+# 저장소(ROOT = tmp_path)는 pytest 임시 폴더라 보통 이 저장소 작업 트리 안이다(pyproject의 --basetemp). 왜:
+# 규칙 변경 27의 공통 조건은 결과마다 체크포인트 SHA-256과 코드 커밋을 남기는 것인데, drift 결과 파일에는
+# 체크포인트 SHA-256만 있었다(코드 커밋은 문서와 커밋 메시지에만 있었음).
+def test_stage6_results_record_the_code_commit(fake_root, monkeypatch) -> None:
+    monkeypatch.setattr(stage6, "ROOT", fake_root)
+    VOCAB.save(fake_root / "manifests" / "vocab.json")
+    stage6.main(
+        ["drift", "--checkpoint", "m.pt", "--name", "drift-git", "--left", "64", "--minutes", "0.2"]
+        + ["--device", "cpu"]
+    )
+    result = json.loads((fake_root / "reports" / "stage6" / "drift-git.json").read_text(encoding="utf-8"))
+    assert result["checkpoint_sha256"] == hashlib.sha256((fake_root / "m.pt").read_bytes()).hexdigest()
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=fake_root, capture_output=True, text=True)
+    if head.returncode != 0:
+        assert result["git_head"] is None and result["git_dirty"] is None
+        return
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=fake_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result["git_head"] == head.stdout.strip() and len(result["git_head"]) == 40
+    assert result["git_dirty"] is bool(status.stdout.strip())
