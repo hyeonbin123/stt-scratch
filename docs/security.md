@@ -56,6 +56,16 @@
 - **gitleaks 8.30.1**: 커밋 81개, 약 36.8 MB에서 비밀 정보 0건
 - **CI·데이터 출처 고정**: `.github/workflows/ci.yml`은 최상위 `permissions: contents: read`로 GITHUB_TOKEN을 읽기 전용으로 두고, 두 액션(`actions/checkout` v7.0.1, `astral-sh/setup-uv` v10.2.0)을 태그 대신 그 릴리스의 커밋 SHA로 고정한다(태그를 옮겨도 다른 코드가 실행되지 않음). 설치 단계의 해시 검증(`--require-hashes`)은 CPU torch 휠을 잠금 파일과 따로 받는 구조라 넣지 않았다(비밀값·배포 권한이 없는 테스트 전용 워크플로). `scripts/download_data.py`는 이제 조회한 커밋 sha 그대로 내려받는다(전에는 sha를 기록만 하고 움직이는 브랜치 이름으로 받았다). 10-29 메타데이터 조회(데이터는 다시 받지 않음)로 `reports/data/download-manifest-2026-10-11.json`에 기록된 네 출처의 커밋이 모두 sha로 열리고 기록과 같은 파일·크기를 가리키며 그 뒤 출처 브랜치가 움직이지 않았음을 확인했다
 
+## 재점검 (2026-11-07, 확정 자막 옵션 세 개와 시작 로그 뒤 — 규칙, 스캔 전에 커밋)
+
+10-29 재점검(대상 코드 4a8345d) 뒤 서비스 코드가 네 번 바뀌었다: 확정 자막 옵션 세 개 `--word-confidence`(35b7f0b)·`--itn`(1e73703)·`--hotwords`(ae01d56; 모두 기본 끔)와, `--hotwords` 목록의 남긴·뺀 어절 수를 명령행 실행의 시작 로그에 실제로 찍는 처리기(c024c71). HTTP 라우트(`/`, `/info`, `/ws`)와 보안 헤더·Host 허용 목록·Origin 검사·입력·자원 상한은 그대로다. 옵션을 모두 끈 기본 서버에서 바뀐 HTTP 표면은 둘이다: (1) 페이지 HTML — 어절 신뢰도를 보내는 서버에서만 보이는 밑줄 선택(기본 숨김), 확정 자막을 `display_text`나 어절별 span으로 그리는 스크립트(모두 `textContent`·텍스트 노드로만 넣는다), 신뢰도 낮은 어절의 CSS 클래스; 인라인 블록이 바뀌어 CSP 해시가 다시 계산된다(정적 테스트가 해시 일치를 확인). (2) `/info`의 새 키 `word_confidence`·`itn`(기본 false). 옵션을 켠 경로가 바꾸는 것은 WebSocket 메시지 내용(final의 `words`·`confidence_ms`·`display_text`, 편향 디코딩의 확정 텍스트)과 시작 로그라 ZAP이 보지 않는다(테스트와 독립 검토가 맡는다). 같은 도구·절차로 다시 점검한다.
+
+- 대상: 이 규칙을 넣은 커밋의 서비스 코드(서비스 코드의 마지막 변경은 c024c71). 서버는 10-29와 같이 `--device cpu --allowed-host host.docker.internal --port 8098`로 띄우고(옵션 세 개는 끔 = 기본값), 스캔 전에 `/info`가 device cpu·fp32·step_path fast·final_pass full·rule2 0.8 s·cpu_threads 1·`word_confidence` false·`itn` false인지 대조한다. GPU는 쓰지 않는다
+- 도구: OWASP ZAP(Docker `zaproxy/zap-stable`, `zap-baseline.py`와 `zap-api-scan.py -f openapi`, 10-14부터 같은 인자), bandit 1.9.4, pip-audit 2.10.1(아래 '다시 돌리는 방법'의 2026-11-07 추가 명령 = CI audit 단계와 같은 대조 + OSV), gitleaks(Docker `zricethezav/gitleaks`). 도구 판은 결과에 적는다
+- **통과 조건**: (가) 기본 스캔 Medium·Low 0건(10-14 수정 뒤·10-18·10-29와 같음) (나) API 스캔 High·Medium 0건, Low는 루트 페이지 `/`의 "Unexpected Content-Type"(10-14부터 같은 오탐)만 (다) 스캔 중 서버 로그에 5xx 응답과 트레이스백 0건 (라) bandit High 0건, Medium은 10-29와 같은 B104 오탐만 (마) pip-audit는 받아들인 세 권고(PYSEC-2025-194, PYSEC-2026-3447, GHSA-xmj3-9gf7-h52w) 밖 0건, gitleaks 0건. 새 Medium 이상·5xx·새 권고가 나오면 기록 전에 원인을 찾고, 서비스 수정이 필요하면 테스트를 먼저 고친 뒤 다시 스캔한다
+- 확인만 하는 것(판정에 쓰지 않음): 정보 경보(Modern Web Application, Non-Storable Content, Client Error)의 종류·건수, 클라우드 메타데이터 규칙 경로의 응답 코드(10-29는 Host 허용 목록 거부 400), bandit Low 건수와 종류의 변화(옵션 모듈 `biasing.py`·`confidence.py`·`itn.py`가 늘렸을 수 있음), 서버 예열 시간, ZAP 판, 스캔 중 PC의 다른 부하(ZAP은 HTTP 경로만 보므로 결과와 무관)
+- 결과: `reports/security/zap-{baseline,api}-2026-11-07.md`(ZAP 출력 그대로), `reports/security/summary.json`에 `recheck_2026_11_07` 키 추가(기존 키는 그대로), 이 절 아래 '결과' 소절
+
 ## 다시 돌리는 방법
 
 2026-10-24부터 서버에 Host 허용 목록이 있어, Docker 컨테이너의 ZAP이 붙는 이름 `host.docker.internal`을 `--allowed-host`로 더해야 한다(아니면 모든 요청이 400으로 거부된다). ZAP은 HTTP 경로만 보므로 모델 장치는 결과와 무관하고, 점검 중 GPU를 비워 두려면 `--device cpu`로 띄운다.
