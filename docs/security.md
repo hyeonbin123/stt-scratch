@@ -76,3 +76,14 @@ Windows Git Bash에서는 Docker 볼륨 경로가 바뀌지 않도록 `MSYS_NO_P
 ```bash
 grep -E '^(torch|torchaudio)==' work/security/requirements.txt | sed -E 's/\+cu[0-9]+//; s/ *;.*//' > work/security/torch-pypi.txt && uvx pip-audit -r work/security/torch-pypi.txt --no-deps --disable-pip
 ```
+
+2026-11-07 추가: 위 `uv export --frozen` 목록으로 하는 수동 pip-audit는 환경 표지를 그대로 두므로 점검하는 PC에 맞지 않는 항목이 목록에서 빠져 조용히 대조되지 않는다(2026-11-07 Windows에서 확인: 잠금 75개 중 52개만 pip-audit 목록에 오르고 그중 torch·torchaudio는 위처럼 건너뛴다. 빠진 것은 리눅스 전용 CUDA 휠 등 `sys_platform` 표지 21개와 파이썬 3.12 미만 갈래의 numpy·networkx다). 2026-11-05부터 CI의 audit 작업(`.github/workflows/ci.yml`, 차단 게이트: 받아들인 세 권고 밖의 권고가 하나라도 나오면 워크플로가 실패)이 잠금의 모든 패키지를 대조하므로, 수동 점검도 그 단계와 같은 명령을 쓴다: `--all-groups`로 내보내고, 표지와 `+cu128` 꼬리를 떼고(꼬리를 떼면 같은 번호의 PyPI 판으로 대조되어 위 torch·torchaudio 별도 점검을 겸한다), 같은 이름의 둘째 판(파이썬 3.12 이상 갈래의 numpy·networkx)은 다음 목록으로 나누고, `--strict`로 대조하지 못한 패키지가 있으면 실패하게 한다. 받아들인 세 권고(PYSEC-2025-194, PYSEC-2026-3447, GHSA-xmj3-9gf7-h52w; 이유는 위 10-29 재점검 절)는 `--ignore-vuln`으로 뺀다.
+
+```bash
+uv export --locked --all-groups --format requirements-txt --no-hashes --no-annotate --no-emit-project > work/security/locked.txt
+grep -E '^[A-Za-z0-9]' work/security/locked.txt | sed -E -e 's/[[:space:]]*;.*$//' -e 's/\+[^[:space:]]*$//' > work/security/pinned.txt
+awk -F'==' -v dir=work/security '{ name = tolower($1); gsub(/[-_.]+/, "-", name); print > (dir "/audit-" (++seen[name]) ".txt") }' work/security/pinned.txt
+for list in work/security/audit-*.txt; do uvx pip-audit==2.10.1 -r "$list" --no-deps --disable-pip --strict --progress-spinner off --ignore-vuln PYSEC-2025-194 --ignore-vuln PYSEC-2026-3447 --ignore-vuln GHSA-xmj3-9gf7-h52w; done
+```
+
+2026-11-07 결과(위 명령 그대로, pip-audit 2.10.1): 잠금 75개 = 대조 75개(`audit-1.txt` 73개 'No known vulnerabilities found, 4 ignored', `audit-2.txt` 2개 'No known vulnerabilities found'; `uv.lock`의 패키지 항목 76개 가운데 이 프로젝트 자신을 뺀 수와 같다). 같은 두 목록을 OSV 데이터베이스(`-s osv`, 무시 목록 없이)로도 대조했더니 나온 것은 PyPI 권고 DB와 같은 세 권고(setuptools 81.0.0 PYSEC-2026-3447·GHSA-xmj3-9gf7-h52w, torch 2.11.0 PYSEC-2025-194)뿐이고 OSV에만 있는 권고는 없었다. 그래서 CI audit은 PyPI DB 그대로 두고, OSV 대조는 재점검 때 수동으로 함께 돌린다(OSV에만 있는 권고가 생기면 그 판단을 이 문서에 날짜를 붙여 적는다).
